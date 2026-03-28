@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Design tokens ─────────────────────────────────────────────────────────── */
+:root {
+  --background:        #f8fafc;
+  --foreground:        #0f172a;
+  --card:              #ffffff;
+  --card-border:       #e2e8f0;
+  --muted:             #f1f5f9;
+  --muted-foreground:  #64748b;
+  --primary:           #4f46e5;
+  --primary-foreground:#ffffff;
+  --ring:              #c7d2fe;
+}
+
+.dark {
+  --background:        #0a0a12;
+  --foreground:        #f1f5f9;
+  --card:              #111120;
+  --card-border:       #1e1e32;
+  --muted:             #161624;
+  --muted-foreground:  #94a3b8;
+  --primary:           #6366f1;
+  --primary-foreground:#ffffff;
+  --ring:              #3730a3;
+}
+
+/* ─── Base ───────────────────────────────────────────────────────────────────── */
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Niural scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+  .dark ::-webkit-scrollbar-thumb { background: #334155; }
+
+  /* Focus ring */
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+}
+
+/* ─── Utilities ─────────────────────────────────────────────────────────────── */
+@layer utilities {
+  .text-balance { text-wrap: balance; }
+
+  /* Card surface */
+  .surface {
+    background-color: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 1rem;
+  }
+
+  /* Gradient mesh background for heroes */
+  .mesh-bg {
+    background-image:
+      radial-gradient(ellipse 80% 60% at 50% -10%, rgba(99,102,241,0.12) 0%, transparent 70%),
+      radial-gradient(ellipse 60% 40% at 80% 80%, rgba(139,92,246,0.07) 0%, transparent 60%);
+  }
+
+  .dark .mesh-bg {
+    background-image:
+      radial-gradient(ellipse 80% 60% at 50% -10%, rgba(99,102,241,0.22) 0%, transparent 70%),
+      radial-gradient(ellipse 60% 40% at 80% 80%, rgba(139,92,246,0.12) 0%, transparent 60%);
+  }
+}
