@@ -16,6 +16,16 @@ function isValidLinkedIn(url: string): boolean {
   return LINKEDIN_PATTERN.test(url)
 }
 
+// ─── Unicode sanitizer — removes lone surrogates and other chars that cause ──
+// ─── Claude API "no low surrogate in string" errors from Tavily content ──────
+function sanitizeForClaude(text: string): string {
+  return text
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '') // lone high surrogates
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '') // lone low surrogates
+    .replace(/[^\x09\x0A\x0D\x20-\x7E\x80-\uD7FF\uE000-\uFFFD]/g, '') // other invalid chars
+    .trim()
+}
+
 // ─── Resume storage upload (uses service role to write to private bucket) ────
 async function uploadResumeToStorage(
   candidateId: string,
@@ -51,6 +61,7 @@ const ScreeningSchema = z.object({
   score: z.number().min(0).max(100),
   rationale: z.string(),
   sixty_second_brief: z.string(),
+  potential_bias_flags: z.array(z.string()).optional().default([]),
   structured_data: z.object({
     skills: z.array(z.string()),
     years_exp: z.number(),
@@ -69,7 +80,7 @@ const EnrichmentSchema = z.object({
 
 // ─── Resume text extraction via unpdf ────────────────────────────────────────
 // unpdf is used instead of pdf-parse for reliable cross-runtime PDF parsing.
-// Falls back to mammoth for DOCX and UTF-8 decode for plain text.
+// Falls back to mammoth for DOCX.
 // Throws on failure — caller must catch and set status = manual_review_required.
 async function extractResumeTextFromBuffer(buffer: Buffer, filename: string): Promise<string> {
   const ext = filename.split('.').pop()?.toLowerCase()
@@ -88,7 +99,6 @@ async function extractResumeTextFromBuffer(buffer: Buffer, filename: string): Pr
     return result.value
   }
 
-  // Plain text fallback (txt, rtf, unknown)
   return buffer.toString('utf-8')
 }
 
@@ -111,6 +121,14 @@ Scoring rubric (0-100):
 - 61-79: Good fit — solid match, minor gaps acceptable
 - 80-100: Excellent fit — strong match, exceeds or meets most requirements
 
+BIAS CHECK — before finalizing your score, ask yourself:
+- Am I penalizing this candidate for employment gaps without evidence of poor performance?
+- Am I overweighting school prestige over demonstrated skills?
+- Am I undervaluing non-traditional career paths?
+- Am I making assumptions based on name or location?
+If yes to any: add a specific flag to potential_bias_flags explaining the concern.
+If no concerns: return empty array.
+
 The "sixty_second_brief" must be 3-5 sentences written as if a hiring manager is verbally briefing the CEO:
 • Lead with the candidate's current/most recent role and years of experience
 • Highlight 2-3 standout skills or achievements relevant to this specific role
@@ -122,6 +140,7 @@ Return a JSON object ONLY — absolutely no markdown, no code fences, no text ou
   "score": <integer 0-100>,
   "rationale": "<2-3 sentences explaining the score, referencing specific requirements met or missed>",
   "sixty_second_brief": "<3-5 sentence verbal briefing for the hiring manager>",
+  "potential_bias_flags": ["<specific bias concern if detected>"],
   "structured_data": {
     "skills": ["<skill>", "..."],
     "years_exp": <integer>,
@@ -171,7 +190,47 @@ Evaluate this candidate and return the JSON object.`,
   return ScreeningSchema.parse(parsed)
 }
 
-// ─── AI enrichment call (only triggered when score > 80) ─────────────────────
+// ─── Tavily search helper ─────────────────────────────────────────────────────
+interface TavilyResult {
+  title: string
+  url: string
+  content: string
+  score: number
+}
+
+interface TavilyResponse {
+  answer?: string
+  results: TavilyResult[]
+}
+
+async function tavilySearch(query: string): Promise<TavilyResponse> {
+  const response = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      api_key: process.env.TAVILY_API_KEY,
+      query,
+      search_depth: 'basic',
+      max_results: 5,
+      include_answer: true,
+    }),
+  })
+  if (!response.ok) {
+    throw new Error(`Tavily search failed: ${response.status} ${response.statusText}`)
+  }
+  return response.json() as Promise<TavilyResponse>
+}
+
+function formatTavilyResults(data: TavilyResponse): string {
+  const lines: string[] = []
+  if (data.answer) lines.push(`Summary: ${sanitizeForClaude(data.answer)}`)
+  for (const r of data.results) {
+    lines.push(`- [${r.title}](${r.url}): ${sanitizeForClaude(r.content).slice(0, 300)}`)
+  }
+  return lines.join('\n')
+}
+
+// ─── AI enrichment call (only triggered when score >= 70) ────────────────────
 async function runEnrichment(
   client: Anthropic,
   candidateName: string,
@@ -179,29 +238,38 @@ async function runEnrichment(
   githubUrl: string | null,
   resumeText: string
 ): Promise<z.infer<typeof EnrichmentSchema>> {
+  // 1. Run 3 Tavily searches in parallel for real web data
+  const linkedinQuery = `"${candidateName}" site:linkedin.com`
+  const githubQuery = githubUrl
+    ? `"${candidateName}" site:github.com`
+    : `"${candidateName}" github`
+  const generalQuery = `"${candidateName}" developer engineer`
+
+  const [linkedinData, githubData, generalData] = await Promise.all([
+    tavilySearch(linkedinQuery).catch(() => ({ results: [] } as TavilyResponse)),
+    tavilySearch(githubQuery).catch(() => ({ results: [] } as TavilyResponse)),
+    tavilySearch(generalQuery).catch(() => ({ results: [] } as TavilyResponse)),
+  ])
+
+  const linkedinContext = sanitizeForClaude(formatTavilyResults(linkedinData))
+  const githubContext = sanitizeForClaude(formatTavilyResults(githubData))
+  const generalContext = sanitizeForClaude(formatTavilyResults(generalData))
+
+  // 2. Pass real Tavily results to Claude for synthesis
   const stream = client.messages.stream({
-    model: 'claude-opus-4-6',
+    model: 'claude-sonnet-4-5',
     max_tokens: 5000,
-    thinking: { type: 'adaptive' },
-    system: `You are Niural Scout's deep-research analyst. A candidate has been shortlisted (score > 80).
-Your job is to simulate an investigative online research pass using their profile URLs and resume.
-
-You do NOT have live internet access. Instead, reason carefully from:
-1. The LinkedIn URL structure (e.g. linkedin.com/in/username) to infer their professional brand
-2. The GitHub URL (if present) to infer open-source footprint and technical depth
-3. The resume text to cross-reference claims against what their online profiles likely show
-
-Be specific, analytical, and candid. Flag any inconsistencies between resume claims and what
-their online profile likely shows (e.g., missing companies on LinkedIn, resume title vs. apparent seniority).
+    system: `You are Niural Scout's deep-research analyst. A candidate has been shortlisted (score >= 70).
+You have been given REAL web search results from Tavily. Synthesize the actual findings — do not hallucinate or infer beyond what the data shows.
 
 Return a JSON object ONLY — no markdown, no code fences, no explanation outside the JSON.
 JSON format:
 {
-  "linkedin_summary": "<3-5 sentences: professional brand, likely endorsements, activity pattern, network signals>",
-  "x_findings": "<2-3 sentences: thought leadership presence on X/Twitter — note if profile likely doesn't exist or is inactive>",
-  "github_summary": "<3-5 sentences: likely repos, contribution pattern, notable projects, code quality signals — or 'No GitHub URL provided' if absent>",
+  "linkedin_summary": "<3-5 sentences based on real LinkedIn search results: professional brand, role history, activity signals>",
+  "x_findings": "<2-3 sentences: thought leadership on X/Twitter based on web findings — note if nothing found>",
+  "github_summary": "<3-5 sentences based on real GitHub search results: repos, contributions, notable projects — or 'No GitHub data found' if absent>",
   "discrepancy_flags": [
-    "<specific flag: e.g., 'Resume lists Senior Engineer at Acme Corp 2021-2023 but LinkedIn handle suggests recent grad'>",
+    "<specific flag grounded in actual search results vs. resume claims>",
     "..."
   ]
 }`,
@@ -212,10 +280,21 @@ JSON format:
 LINKEDIN URL: ${linkedinUrl}
 GITHUB URL: ${githubUrl ?? 'Not provided'}
 
-RESUME TEXT (first 4000 chars):
+--- REAL WEB SEARCH RESULTS ---
+
+LINKEDIN SEARCH ("${linkedinQuery}"):
+${linkedinContext || 'No results found.'}
+
+GITHUB SEARCH ("${githubQuery}"):
+${githubContext || 'No results found.'}
+
+GENERAL WEB SEARCH ("${generalQuery}"):
+${generalContext || 'No results found.'}
+
+--- RESUME TEXT (first 4000 chars) ---
 ${resumeText.slice(0, 4000)}
 
-Generate the research profile JSON for this shortlisted candidate.`,
+Synthesize the REAL search findings into the research profile JSON.`,
       },
     ],
   })
@@ -273,6 +352,26 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
     }
   }
 
+  // ── 2b. Validate resume file (before any storage upload or AI call) ───────
+  if (!resumeFile || resumeFile.size === 0) {
+    return { success: false, error: 'Please upload a resume.' }
+  }
+
+  if (resumeFile.size > 3 * 1024 * 1024) {
+    return { success: false, error: 'Resume must be under 3 MB.' }
+  }
+
+  const ALLOWED_TYPES = [
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ]
+  if (!ALLOWED_TYPES.includes(resumeFile.type)) {
+    return {
+      success: false,
+      error: 'Only PDF and DOCX files accepted. Images and other formats are not supported.',
+    }
+  }
+
   // ── 3. Verify job is open ─────────────────────────────────────────────────
   const { data: job, error: jobError } = await supabase
     .from('jobs')
@@ -292,15 +391,13 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
   let resumeBuffer: Buffer | null = null
   let extractionError: string | null = null
 
-  if (resumeFile && resumeFile.size > 0) {
-    resumeBuffer = Buffer.from(await resumeFile.arrayBuffer())
-    try {
-      resumeText = await extractResumeTextFromBuffer(resumeBuffer, resumeFile.name)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      extractionError = `PDF extraction failed: ${msg}`
-      console.error('[Resume] Extraction error:', msg)
-    }
+  resumeBuffer = Buffer.from(await resumeFile.arrayBuffer())
+  try {
+    resumeText = await extractResumeTextFromBuffer(resumeBuffer, resumeFile.name)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    extractionError = `PDF extraction failed: ${msg}`
+    console.error('[Resume] Extraction error:', msg)
   }
 
   // ── 5. Upsert candidate ───────────────────────────────────────────────────
@@ -320,7 +417,7 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
   // ── 5b. Upload resume file to Supabase Storage ────────────────────────────
   let resumeStoragePath: string | null = null
 
-  if (resumeFile && resumeBuffer) {
+  if (resumeBuffer) {
     resumeStoragePath = await uploadResumeToStorage(candidate.id, resumeFile, resumeBuffer)
   }
 
@@ -348,6 +445,7 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
       ai_score: null,
       ai_rationale: extractionError,
       ai_brief: null,
+      has_discrepancies: false,
       discrepancy_flags: null,
       social_research: null,
       structured_data: null,
@@ -378,6 +476,7 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
       ai_score: null,
       ai_rationale: LOW_DENSITY_RATIONALE,
       ai_brief: null,
+      has_discrepancies: false,
       discrepancy_flags: null,
       social_research: null,
       structured_data: null,
@@ -402,16 +501,19 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
   }
 
   // ── 10. Determine initial status ──────────────────────────────────────────
-  // Score > 80  → shortlisted (triggers enrichment)
-  // Score 60–72 → manual_review_required ("borderline" — human must verify)
-  // Everything else → applied
+  // Score >= 70 → shortlisted (triggers enrichment)
+  // Score >= 50 && < 70 → pending_review (borderline — human checks)
+  // Score < 50  → rejected
+  // null        → applied
   const score = screening?.score ?? null
   const autoStatus =
-    score != null && score > 80
+    score == null
+      ? 'applied'
+      : score >= 70
       ? 'shortlisted'
-      : score != null && score >= 60 && score <= 72
-      ? 'manual_review_required'
-      : 'applied'
+      : score >= 50
+      ? 'pending_review'
+      : 'rejected'
 
   // ── 11. AI Task 2: Enrichment (only for shortlisted candidates) ────────────
   let enrichment: Awaited<ReturnType<typeof runEnrichment>> | null = null
@@ -425,13 +527,19 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
         githubUrl,
         resumeText || `Name: ${fullName}`
       )
+      console.log('[Enrichment] Success:', JSON.stringify(enrichment).slice(0, 200))
     } catch (err) {
-      console.error('[Niural Scout] Enrichment failed:', err)
+      console.error('[Enrichment] FAILED with error:', err)
+      console.error('[Enrichment] Error message:', err instanceof Error ? err.message : String(err))
     }
   }
 
+  // ── 11b. Evaluate discrepancy flags ──────────────────────────────────────
+  // Advisory only — does NOT change status. Surfaced as warning badge in admin UI.
+  const hasDiscrepancies = (enrichment?.discrepancy_flags?.length ?? 0) > 0
+
   // ── 12. Insert application ────────────────────────────────────────────────
-  const { error: appError } = await supabase.from('applications').insert({
+  const { data: newApp, error: appError } = await supabase.from('applications').insert({
     candidate_id: candidate.id,
     job_id: jobId,
     status: autoStatus,
@@ -440,6 +548,7 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
     ai_score: screening?.score ?? null,
     ai_rationale: screening?.rationale ?? null,
     ai_brief: screening?.sixty_second_brief ?? null,
+    has_discrepancies: hasDiscrepancies,
     discrepancy_flags: enrichment?.discrepancy_flags ?? null,
     social_research: enrichment
       ? {
@@ -454,16 +563,114 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
           score: screening.score,
           rationale: screening.rationale,
           sixty_second_brief: screening.sixty_second_brief,
+          potential_bias_flags: screening.potential_bias_flags ?? [],
         }
       : null,
     research_profile: enrichment ?? null,
-  })
+  }).select('id').single()
 
   if (appError) {
     if (appError.code === '23505') {
       return { success: false, error: 'You have already applied for this position.' }
     }
     return { success: false, error: appError.message }
+  }
+
+  const newApplicationId = newApp.id as string
+
+  // ── 13. Auto-schedule interview for shortlisted candidates ──────────────
+  // EC1: already scheduled → skip   EC2: no calendar env vars → skip
+  // EC3: schedule returns false → log  EC4: schedule throws → catch
+  // EC5: email fails → log (slots survive)  EC6: no ID from insert → fetch
+  if (autoStatus === 'shortlisted') {
+    try {
+      // EC6: If insert didn't return an ID, fetch it separately
+      let applicationId = newApplicationId
+      if (!applicationId) {
+        const { data: fallback } = await supabase
+          .from('applications')
+          .select('id')
+          .eq('candidate_id', candidate.id)
+          .eq('job_id', jobId)
+          .single()
+        applicationId = fallback?.id as string
+        if (!applicationId) {
+          console.error('[Auto-schedule] Could not resolve application ID — skipping')
+        }
+      }
+
+      if (applicationId) {
+        // Discrepancy gate: 3+ flags → block auto-scheduling, move to pending_review
+        const flagCount = enrichment?.discrepancy_flags?.length ?? 0
+
+        if (flagCount >= 3) {
+          await supabase
+            .from('applications')
+            .update({ status: 'pending_review' })
+            .eq('id', applicationId)
+
+          console.log(`[Auto-schedule] Blocked — ${flagCount} discrepancy flags detected. Moving to pending_review.`)
+        } else {
+          // EC2: Skip if Google Calendar credentials are not configured
+          const hasCalendarCreds =
+            process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL &&
+            process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY &&
+            process.env.GOOGLE_CALENDAR_ID
+
+          if (!hasCalendarCreds) {
+            console.warn('[Auto-schedule] Google Calendar env vars not set — skipping')
+          } else {
+            // EC1: Check if slots already exist (avoid double-scheduling)
+            const { data: existingSlots } = await supabase
+              .from('interview_slots')
+              .select('id')
+              .eq('application_id', applicationId)
+              .limit(1)
+
+            if (existingSlots && existingSlots.length > 0) {
+              console.log('[Auto-schedule] Already scheduled for', applicationId, '— skipping')
+            } else {
+              // EC3 + EC4: Call scheduleInterview — catches both error returns and throws
+              const { scheduleInterview } = await import('@/app/actions/schedule')
+              const scheduleResult = await scheduleInterview(applicationId)
+
+              if (scheduleResult.success) {
+                // EC5: Email failure is isolated — slots already persisted
+                try {
+                  const { Resend } = await import('resend')
+                  const resend = new Resend(process.env.RESEND_API_KEY)
+                  const toEmail = process.env.RESEND_TO_OVERRIDE || email
+                  const portalUrl = `${process.env.NEXT_PUBLIC_APP_URL}/portal/${applicationId}`
+
+                  await resend.emails.send({
+                    from: process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
+                    to: toEmail,
+                    subject: `Interview invitation — ${job.title} at Niural`,
+                    html: `
+                      <h2>Congratulations, ${fullName}!</h2>
+                      <p>You've been shortlisted for <strong>${job.title}</strong> at Niural.</p>
+                      <p>Please select your preferred interview time:</p>
+                      <p><a href="${portalUrl}">Select interview slot &rarr;</a></p>
+                      <p>You have 48 hours to select before slots expire.</p>
+                    `,
+                  })
+                  console.log('[Auto-schedule] Slots created and email sent to', toEmail)
+                } catch (emailErr) {
+                  // EC5: Slots exist, email just didn't send — admin can resend manually
+                  console.error('[Auto-schedule] Slots created but email failed:', emailErr)
+                }
+              } else {
+                // EC3: scheduleInterview returned { success: false }
+                console.error('[Auto-schedule] scheduleInterview failed:', scheduleResult.error)
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // EC4: Never fail the application submission because of scheduling errors
+      console.error('[Auto-schedule] Failed:', err)
+    }
   }
 
   return { success: true, score: score ?? 0, status: autoStatus }

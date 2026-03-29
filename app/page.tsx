@@ -141,12 +141,7 @@ export default async function LandingPage() {
           <p className="text-xs text-muted-foreground text-center">
             Hiring platform powered by Niural Scout AI · {new Date().getFullYear()}
           </p>
-          <Link
-            href="/admin/applications"
-            className="text-xs text-muted-foreground hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
-          >
-            Admin →
-          </Link>
+          <div className="w-20" />
         </div>
       </footer>
     </div>

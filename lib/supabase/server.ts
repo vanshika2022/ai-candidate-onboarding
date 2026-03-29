@@ -39,3 +39,36 @@ export function createAdminClient() {
     auth: { autoRefreshToken: false, persistSession: false },
   })
 }
+
+// ── Transcript query ──────────────────────────────────────────────────────────
+
+export interface TranscriptRow {
+  id: string
+  application_id: string
+  fireflies_id: string | null
+  summary: string | null
+  full_transcript: Array<{ speaker: string; text: string; timestamp: number }> | null
+  retrieved_at: string
+}
+
+export async function getTranscriptByApplication(
+  applicationId: string
+): Promise<TranscriptRow | null> {
+  const admin = createAdminClient()
+
+  const { data, error } = await admin
+    .from('transcripts')
+    .select('id, application_id, fireflies_id, summary, full_transcript, retrieved_at')
+    .eq('application_id', applicationId)
+    .order('retrieved_at', { ascending: false })
+    .limit(1)
+    .single()
+
+  if (error) {
+    if (error.code === 'PGRST116') return null // no rows found
+    console.error('[getTranscriptByApplication] Query failed:', error.message)
+    return null
+  }
+
+  return data as TranscriptRow
+}

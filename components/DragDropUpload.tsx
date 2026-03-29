@@ -13,10 +13,9 @@ type FileState =
 const ACCEPTED_TYPES = [
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'text/plain',
 ]
-const ACCEPTED_EXTS = /\.(pdf|docx|txt)$/i
-const MAX_BYTES = 10 * 1024 * 1024 // 10 MB
+const ACCEPTED_EXTS = /\.(pdf|docx)$/i
+const MAX_BYTES = 3 * 1024 * 1024 // 3 MB
 
 interface Props {
   onChange: (file: File | null) => void
@@ -29,10 +28,10 @@ export function DragDropUpload({ onChange, disabled }: Props) {
 
   function validate(file: File): string | null {
     if (!ACCEPTED_EXTS.test(file.name) && !ACCEPTED_TYPES.includes(file.type)) {
-      return 'Only PDF, DOCX, or TXT files are accepted.'
+      return 'Only PDF and DOCX files accepted. Images and other formats are not supported.'
     }
     if (file.size > MAX_BYTES) {
-      return `File must be under 10 MB (yours is ${(file.size / 1024 / 1024).toFixed(1)} MB).`
+      return `File must be under 3 MB (yours is ${(file.size / 1024 / 1024).toFixed(1)} MB).`
     }
     return null
   }
@@ -89,13 +88,13 @@ export function DragDropUpload({ onChange, disabled }: Props) {
   return (
     <div className="space-y-1.5">
       <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-        Resume <span className="text-slate-400 dark:text-slate-500">(PDF, DOCX, or TXT · max 10 MB)</span>
+        Resume <span className="text-slate-400 dark:text-slate-500">(PDF or DOCX · max 3 MB)</span>
       </label>
 
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf,.docx,.txt"
+        accept=".pdf,.docx"
         onChange={handleInputChange}
         className="hidden"
         disabled={disabled}
@@ -176,7 +175,7 @@ export function DragDropUpload({ onChange, disabled }: Props) {
       {/* File type helper */}
       {status === 'idle' && (
         <div className="flex items-center gap-3 pt-0.5">
-          {['PDF', 'DOCX', 'TXT'].map((ext) => (
+          {['PDF', 'DOCX'].map((ext) => (
             <span key={ext} className="flex items-center gap-1 text-[11px] text-slate-400 dark:text-slate-500">
               <FileText size={10} /> {ext}
             </span>

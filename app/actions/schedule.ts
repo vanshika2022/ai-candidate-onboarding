@@ -104,7 +104,7 @@ export async function confirmInterviewSlot(
 
   const { data: app } = await supabase
     .from('applications')
-    .select('tentative_slots, candidates(full_name), jobs(title)')
+    .select('tentative_slots, candidates(full_name, email), jobs(title)')
     .eq('id', applicationId)
     .single()
 
@@ -116,15 +116,20 @@ export async function confirmInterviewSlot(
   if (!selectedSlot) return { success: false, error: 'Selected slot not found.' }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const candidateName = (app.candidates as any)?.full_name ?? 'Candidate'
+  const candidateName  = (app.candidates as any)?.full_name ?? 'Candidate'
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const candidateEmail = (app.candidates as any)?.email ?? ''
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const jobTitle = (app.jobs as any)?.title ?? 'Role'
 
   const toRelease = tentativeSlots.filter(s => s.eventId !== selectedEventId)
 
-  // 1. Confirm the selected event + delete others + add Fireflies notetaker
+  // 1. Confirm the selected event + delete other holds
+  // Returns DEFAULT_MEETING_LINK if set, null otherwise.
+  // Portal URL used as fallback when no Meet link is available.
+  let meetLink: string | null = null
   try {
-    await confirmAndRelease(selectedEventId, toRelease, candidateName, jobTitle)
+    meetLink = await confirmAndRelease(selectedEventId, toRelease, candidateName, jobTitle, candidateEmail)
   } catch (err) {
     console.error('[Calendar] confirmAndRelease failed:', err)
     return { success: false, error: 'Failed to confirm calendar event.' }
@@ -135,12 +140,49 @@ export async function confirmInterviewSlot(
     .from('applications')
     .update({
       status:          'confirmed',
-      interview_link:  `${process.env.NEXT_PUBLIC_BASE_URL ?? 'http://localhost:3000'}/portal/${applicationId}`,
+      interview_link:  meetLink ?? `${process.env.NEXT_PUBLIC_APP_URL}/portal/${applicationId}`,
       tentative_slots: [selectedSlot],   // retain for display
     })
     .eq('id', applicationId)
 
   if (error) return { success: false, error: error.message }
+
+  // 3. Send confirmation email to candidate — never fail confirmation if email fails
+  const interviewLink = meetLink ?? `${process.env.NEXT_PUBLIC_APP_URL}/portal/${applicationId}`
+  const firstName = candidateName.split(' ')[0]
+  const interviewDate = new Date(selectedSlot.start).toLocaleString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  })
+
+  try {
+    const { Resend } = await import('resend')
+    const resend = new Resend(process.env.RESEND_API_KEY)
+    const toEmail = process.env.RESEND_TO_OVERRIDE || candidateEmail
+
+    await resend.emails.send({
+      from: process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
+      to: toEmail,
+      subject: `Your interview is confirmed — ${jobTitle} at Niural`,
+      html: `
+        <h2>Your interview is confirmed!</h2>
+        <p>Hi ${firstName},</p>
+        <p>Your interview for <strong>${jobTitle}</strong> is scheduled.</p>
+        <p><strong>Date:</strong> ${interviewDate}</p>
+        <p><strong>Duration:</strong> 45 minutes</p>
+        <p><strong>Join here:</strong> <a href="${process.env.DEFAULT_MEETING_LINK || interviewLink}">${process.env.DEFAULT_MEETING_LINK || interviewLink}</a></p>
+        <p>Best,<br/>Niural Hiring Team</p>
+      `,
+    })
+    console.log('[Confirm] Email sent to', toEmail)
+  } catch (emailErr) {
+    console.error('[Confirm] Email failed:', emailErr instanceof Error ? emailErr.message : emailErr)
+  }
 
   revalidatePath('/admin/applications')
   revalidatePath(`/admin/applications/${applicationId}`)

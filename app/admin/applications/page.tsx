@@ -3,7 +3,7 @@ export const revalidate = 0
 import { createAdminClient } from '@/lib/supabase/server'
 import type { Application, AppStatus, Job } from '@/lib/supabase/server'
 import Link from 'next/link'
-import { LayoutDashboard, Users, ChevronRight } from 'lucide-react'
+import { LayoutDashboard, Users, ChevronRight, AlertTriangle } from 'lucide-react'
 import { InviteButton } from '@/components/InviteButton'
 import { AdminFilters } from './AdminFilters'
 
@@ -21,6 +21,7 @@ const STATUS_STYLES: Record<AppStatus, string> = {
   rejected: 'bg-rose-50 text-rose-600 ring-1 ring-rose-200 dark:bg-rose-900/20 dark:text-rose-300 dark:ring-rose-800',
   pending_review: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800',
   manual_review_required: 'bg-red-50 text-red-700 ring-1 ring-red-200 dark:bg-red-900/20 dark:text-red-300 dark:ring-red-800',
+  reschedule_requested: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800',
 }
 
 const STATUS_LABELS: Record<AppStatus, string> = {
@@ -37,6 +38,7 @@ const STATUS_LABELS: Record<AppStatus, string> = {
   rejected: 'Rejected',
   pending_review: 'Pending Review',
   manual_review_required: 'Manual Review Required',
+  reschedule_requested: 'Reschedule Requested',
 }
 
 function ScoreBadge({ score }: { score: number | null }) {
@@ -143,7 +145,14 @@ export default async function AdminApplicationsPage({ searchParams }: PageProps)
                 return (
                   <tr key={app.id} className="hover:bg-slate-50 transition-colors dark:hover:bg-muted">
                     <td className="px-5 py-4">
-                      <p className="font-medium text-slate-900 dark:text-white">{app.candidates?.full_name ?? '—'}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="font-medium text-slate-900 dark:text-white">{app.candidates?.full_name ?? '—'}</p>
+                        {(app as Application & { has_discrepancies?: boolean }).has_discrepancies && (
+                          <span title="Discrepancy flags detected">
+                            <AlertTriangle size={13} className="text-amber-500 shrink-0" />
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-400 dark:text-slate-500">{app.candidates?.email}</p>
                     </td>
                     <td className="px-5 py-4">

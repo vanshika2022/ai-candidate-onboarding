@@ -1,14 +1,49 @@
-import { createAdminClient } from '@/lib/supabase/server'
+export const revalidate = 0
+
+import { createAdminClient, getTranscriptByApplication } from '@/lib/supabase/server'
 import type { Application, AppStatus } from '@/lib/supabase/server'
 import { notFound } from 'next/navigation'
+import { revalidatePath } from 'next/cache'
 import Link from 'next/link'
 import {
   ArrowLeft, Briefcase, MapPin, Linkedin, Github,
   AlertTriangle, Star, BookOpen, Building2, Trophy,
   Brain, Globe, CheckCircle, FileText, ExternalLink,
-  Zap,
+  Zap, MessageSquare, CalendarClock, Send,
 } from 'lucide-react'
 import { StatusOverride } from './StatusOverride'
+import { InviteButton } from '@/components/InviteButton'
+import { OfferActions } from './OfferActions'
+import { ReschedulePanel } from './ReschedulePanel'
+
+// ── Server action: proxy reschedule-action API with ADMIN_SECRET ─────────────
+async function handleRescheduleAction(
+  applicationId: string,
+  action: 'approve' | 'decline'
+): Promise<{ success?: boolean; error?: string }> {
+  'use server'
+  try {
+    const res = await fetch(
+      `${process.env.NEXT_PUBLIC_APP_URL}/api/schedule/reschedule-action`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.ADMIN_SECRET}`,
+        },
+        body: JSON.stringify({ application_id: applicationId, action }),
+      }
+    )
+    const data = await res.json()
+    if (data.success) {
+      revalidatePath('/admin/applications')
+      revalidatePath(`/admin/applications/${applicationId}`)
+    }
+    return data
+  } catch {
+    return { error: 'Failed to process reschedule action' }
+  }
+}
 
 const STATUS_STYLES: Record<AppStatus, string> = {
   applied: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
@@ -24,6 +59,7 @@ const STATUS_STYLES: Record<AppStatus, string> = {
   rejected: 'bg-rose-50 text-rose-600 ring-1 ring-rose-200 dark:bg-rose-900/20 dark:text-rose-300 dark:ring-rose-800',
   pending_review: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800',
   manual_review_required: 'bg-red-50 text-red-700 ring-1 ring-red-200 dark:bg-red-900/20 dark:text-red-300 dark:ring-red-800',
+  reschedule_requested: 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800',
 }
 
 const STATUS_LABELS: Record<AppStatus, string> = {
@@ -32,6 +68,7 @@ const STATUS_LABELS: Record<AppStatus, string> = {
   interview_scheduled: 'Scheduled', confirmed: 'Confirmed',
   interviewed: 'Interviewed', offer_sent: 'Offer Sent', hired: 'Hired', rejected: 'Rejected',
   pending_review: 'Pending Review', manual_review_required: 'Manual Review Required',
+  reschedule_requested: 'Reschedule Requested',
 }
 
 function ScoreRing({ score }: { score: number }) {
@@ -85,6 +122,7 @@ interface PageProps {
 export default async function ApplicationDetailPage({ params }: PageProps) {
   const supabase = createAdminClient()
 
+  // Fetch application + candidate + job
   const { data: app } = await supabase
     .from('applications')
     .select('*, candidates(*), jobs(*)')
@@ -93,12 +131,22 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
 
   if (!app) notFound()
 
-  const application = app as Application
+  const application   = app as Application
+  const hasDiscrepancies = (app as Application & { has_discrepancies?: boolean }).has_discrepancies ?? false
+
+  // Reschedule fields
+  const rescheduleStatus = (app.reschedule_status as string | null) ?? null
+  const rescheduleReason = (app.reschedule_reason as string | null) ?? null
+  const rescheduleRequestedAt = (app.reschedule_requested_at as string | null) ?? null
+
   const aiAnalysis = application.ai_analysis as {
     score?: number
     rationale?: string
     sixty_second_brief?: string
+    potential_bias_flags?: string[]
   } | null
+
+  const biasFlags = aiAnalysis?.potential_bias_flags ?? []
 
   const structuredData = application.structured_data as {
     skills?: string[]
@@ -108,10 +156,9 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
     achievements?: string[]
   } | null
 
-  // Dedicated columns only — prevents the same JSONB blob text appearing in both sections
-  const score = application.ai_score ?? aiAnalysis?.score ?? null
-  const rationale = application.ai_rationale ?? null   // dark card: short score explanation
-  const brief = application.ai_brief ?? null           // Analysis Detail: 60-second brief
+  const score     = application.ai_score ?? aiAnalysis?.score ?? null
+  const rationale = application.ai_rationale ?? null
+  const brief     = application.ai_brief ?? null
 
   const discrepancyFlags = application.discrepancy_flags
 
@@ -135,6 +182,30 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
     resumeSignedUrl = application.resume_url
   }
 
+  // Fetch transcript (if available)
+  const transcript = await getTranscriptByApplication(params.id)
+
+  // Fetch offer letter for this application (most recent)
+  const { data: offerRow } = await supabase
+    .from('offer_letters')
+    .select('id, status, content')
+    .eq('application_id', params.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  const draftOffer = offerRow
+    ? { id: offerRow.id, status: offerRow.status as 'draft' | 'sent' | 'signed', content: offerRow.content }
+    : null
+
+  // Determine which action buttons to show in the right column
+  const showInvite = ['shortlisted', 'pending_review'].includes(application.status)
+  const inviteStage =
+    application.status === 'confirmed' || application.status === 'interview_scheduled' ? 'scheduled' :
+    application.status === 'slots_held' || application.status === 'slots_offered' ? 'slots_offered' :
+    'pending'
+  const showOfferActions = ['interviewed', 'offer_sent', 'hired'].includes(application.status)
+
   return (
     <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
       {/* Back */}
@@ -144,6 +215,15 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
       >
         <ArrowLeft size={14} /> Back to Applications
       </Link>
+
+      {/* ── Reschedule alert (above hero card when relevant) ─────────────── */}
+      <ReschedulePanel
+        applicationId={application.id}
+        rescheduleStatus={rescheduleStatus}
+        rescheduleReason={rescheduleReason}
+        rescheduleRequestedAt={rescheduleRequestedAt}
+        onAction={handleRescheduleAction}
+      />
 
       {/* Hero card */}
       <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-card-border dark:bg-card">
@@ -156,6 +236,21 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
               <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLES[application.status]}`}>
                 {STATUS_LABELS[application.status]}
               </span>
+              {hasDiscrepancies && (
+                <span className="flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800">
+                  <AlertTriangle size={11} /> Discrepancy Flags
+                </span>
+              )}
+              {rescheduleStatus === 'new_slots_sent' && (
+                <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:ring-emerald-800">
+                  New slots sent
+                </span>
+              )}
+              {rescheduleStatus === 'declined' && (
+                <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-500 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700">
+                  Reschedule declined
+                </span>
+              )}
             </div>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{application.candidates?.email}</p>
 
@@ -216,9 +311,7 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
         {/* Left column — AI intel */}
         <div className="space-y-6 lg:col-span-2">
 
-          {/* ── Intelligence Profile (dark card) ─────────────────────────────
-               Shows the short ai_rationale + score at a glance.
-               Flags surface here so they can't be missed.              */}
+          {/* Intelligence Profile (dark card) */}
           {(rationale || score != null || (flags && flags.length > 0)) && (
             <div className="rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950 p-6 shadow-lg ring-1 ring-white/10">
               <div className="flex items-start justify-between gap-4">
@@ -252,7 +345,6 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
                 )}
               </div>
 
-              {/* ai_rationale: the short 2-3 sentence score explanation */}
               {rationale && (
                 <p className="mt-4 text-sm leading-6 text-slate-300">{rationale}</p>
               )}
@@ -272,11 +364,27 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
                   </ul>
                 </div>
               )}
+
+              {biasFlags.length > 0 && (
+                <div className="mt-4 rounded-xl bg-orange-500/10 border border-orange-500/25 p-3">
+                  <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-orange-400">
+                    <AlertTriangle size={12} /> AI Bias Self-Check
+                  </p>
+                  <p className="mb-2 text-[11px] text-orange-300/70">AI detected potential bias in scoring — human review recommended</p>
+                  <ul className="space-y-1.5">
+                    {biasFlags.map((flag, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs leading-5 text-orange-300/90">
+                        <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-orange-400" />
+                        {flag}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
 
-          {/* ── Analysis Detail ────────────────────────────────────────────────
-               The full 60-second ai_brief for the hiring manager.       */}
+          {/* Analysis Detail — 60-second brief */}
           {brief && (
             <Section title="Analysis Detail" icon={Brain}>
               <blockquote className="border-l-2 border-indigo-300 pl-4 text-sm leading-7 text-slate-600 dark:text-slate-300 italic">
@@ -285,7 +393,7 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
             </Section>
           )}
 
-          {/* Structured data */}
+          {/* Structured Profile */}
           {structuredData && (
             <Section title="Structured Profile" icon={Star}>
               <div className="space-y-4">
@@ -347,7 +455,7 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
             </Section>
           )}
 
-          {/* Social research */}
+          {/* Scout Findings */}
           {socialResearch && (socialResearch.linkedin_summary || socialResearch.github_summary || socialResearch.x_findings) && (
             <Section title="Scout Findings" icon={Globe}>
               <div className="space-y-4">
@@ -377,6 +485,37 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
             </Section>
           )}
 
+          {/* Interview Transcript */}
+          {transcript && (
+            <Section title="Interview Transcript" icon={MessageSquare}>
+              {transcript.summary && (
+                <div className="mb-4 rounded-xl bg-slate-50 p-4 dark:bg-muted">
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                    Summary
+                  </p>
+                  <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{transcript.summary}</p>
+                </div>
+              )}
+              {transcript.full_transcript && transcript.full_transcript.length > 0 && (
+                <div className="max-h-80 overflow-y-auto space-y-3 rounded-xl border border-slate-100 p-4 dark:border-card-border">
+                  {transcript.full_transcript.map((line, i) => (
+                    <div key={i} className="flex gap-3">
+                      <span className="shrink-0 rounded-md bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 h-fit mt-0.5">
+                        {line.speaker}
+                      </span>
+                      <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">{line.text}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="mt-3 text-[11px] text-slate-400 dark:text-slate-500">
+                Retrieved {new Date(transcript.retrieved_at).toLocaleDateString('en-US', {
+                  month: 'short', day: 'numeric', year: 'numeric',
+                })} via Fireflies.ai
+              </p>
+            </Section>
+          )}
+
           {/* Resume text */}
           {application.resume_text && (
             <Section title="Resume (Extracted Text)" icon={FileText}>
@@ -386,15 +525,57 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
             </Section>
           )}
 
-          {!brief && !structuredData && !socialResearch && !application.resume_text && (
+          {!brief && !structuredData && !socialResearch && !application.resume_text && !transcript && (
             <div className="rounded-2xl border border-dashed border-slate-200 p-10 text-center text-sm text-slate-400 dark:border-card-border dark:text-slate-500">
               AI analysis not available for this application.
             </div>
           )}
         </div>
 
-        {/* Right column — override */}
+        {/* Right column */}
         <div className="space-y-6">
+
+          {/* ── Status-based action panel ─────────────────────────────────────── */}
+          {(showInvite || showOfferActions) && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-card-border dark:bg-card">
+              <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                {showOfferActions
+                  ? <><Send size={14} className="text-indigo-500" /> Offer Letter</>
+                  : <><CalendarClock size={14} className="text-indigo-500" /> Schedule Interview</>
+                }
+              </h2>
+
+              {showInvite && (
+                <div className="space-y-2">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Send the candidate a link with 5 available interview slots.
+                    Google Calendar holds will be created immediately.
+                  </p>
+                  <InviteButton applicationId={application.id} stage={inviteStage} />
+                  {application.interview_link && (
+                    <a
+                      href={application.interview_link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-2 flex items-center gap-1.5 text-xs text-indigo-600 hover:underline dark:text-indigo-400"
+                    >
+                      <ExternalLink size={11} /> Google Meet link
+                    </a>
+                  )}
+                </div>
+              )}
+
+              {showOfferActions && (
+                <OfferActions
+                  applicationId={application.id}
+                  jobTitle={application.jobs?.title ?? ''}
+                  draftOffer={draftOffer}
+                />
+              )}
+            </div>
+          )}
+
+          {/* Manual Override */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-card-border dark:bg-card">
             <h2 className="mb-4 text-sm font-semibold text-slate-700 dark:text-slate-200">Manual Override</h2>
             <StatusOverride
@@ -419,6 +600,18 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
               <span>Application ID</span>
               <span className="font-mono text-slate-400 dark:text-slate-500 text-[10px]">{application.id.slice(0, 8)}…</span>
             </div>
+            {draftOffer && (
+              <div className="flex justify-between">
+                <span>Offer Status</span>
+                <span className="font-medium capitalize text-slate-700 dark:text-slate-300">{draftOffer.status}</span>
+              </div>
+            )}
+            {transcript && (
+              <div className="flex justify-between">
+                <span>Transcript</span>
+                <span className="font-medium text-slate-700 dark:text-slate-300">Available</span>
+              </div>
+            )}
             {application.admin_override_note && (
               <div className="pt-2 border-t border-slate-100 dark:border-card-border">
                 <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Last Admin Note</p>

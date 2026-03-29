@@ -19,6 +19,7 @@ export type AppStatus =
   | 'rejected'
   | 'pending_review'
   | 'manual_review_required'
+  | 'reschedule_requested'
 
 export interface TentativeSlot {
   eventId: string

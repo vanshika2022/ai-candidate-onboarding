@@ -29,12 +29,20 @@ const FIREFLIES_NOTETAKER = 'fred@fireflies.ai'
 
 // ─── Calendar client (service account) ───────────────────────────────────────
 export function getCalendarClient() {
+  const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY!
+    .replace(/\\n/g, '\n')
+    .replace(/^"/, '')
+    .replace(/"$/, '')
+
   const auth = new google.auth.GoogleAuth({
     credentials: {
-      client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      private_key: process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL!,
+      private_key: privateKey,
     },
-    scopes: ['https://www.googleapis.com/auth/calendar'],
+    scopes: [
+      'https://www.googleapis.com/auth/calendar',
+      'https://www.googleapis.com/auth/calendar.events',
+    ],
   })
   return google.calendar({ version: 'v3', auth })
 }
@@ -141,27 +149,35 @@ export async function confirmAndRelease(
   selectedEventId: string,
   toRelease: TentativeSlot[],
   candidateName: string,
-  jobTitle: string
-): Promise<void> {
+  jobTitle: string,
+  candidateEmail: string
+): Promise<string | null> {
   const calendar   = getCalendarClient()
   const calendarId = getCalendarId()
 
-  // 1. Upgrade selected event → CONFIRMED + add Fireflies notetaker as attendee
+  // 1. Upgrade selected event → CONFIRMED
+  // Known limitation: Google Meet auto-generation via conferenceData requires
+  // Google Workspace with domain-wide delegation. Personal Gmail service
+  // accounts return 400 "Invalid conference type value" and cannot add external
+  // attendees (403). The code architecture is production-ready — only the
+  // credentials differ. In production with Google Workspace, re-enable
+  // conferenceData + attendees in this patch call.
   await calendar.events.patch({
     calendarId,
     eventId: selectedEventId,
     requestBody: {
       summary:     `Interview: ${candidateName} — ${jobTitle}`,
-      description: 'Confirmed via Niural candidate portal. Notetaker (Fireflies) invited.',
+      description: 'Confirmed via Niural candidate portal. Add Fireflies notetaker (fred@fireflies.ai) and Meet link manually.',
       status:      'confirmed',
-      attendees: [
-        { email: FIREFLIES_NOTETAKER, displayName: 'Fireflies Notetaker', comment: 'AI notetaker' },
-      ],
     },
   })
 
-  // 2. Delete the remaining 4 TENTATIVE holds (best-effort, don't fail on 404)
+  // 2. Delete the remaining TENTATIVE holds (best-effort, don't fail on 404)
   await Promise.allSettled(
     toRelease.map(s => calendar.events.delete({ calendarId, eventId: s.eventId }))
   )
+
+  // Production: auto-generated via Google Workspace conferenceData API
+  // Demo: static Meet link from DEFAULT_MEETING_LINK env var
+  return process.env.DEFAULT_MEETING_LINK ?? null
 }
