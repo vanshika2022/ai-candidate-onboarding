@@ -335,7 +335,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           const { error: adminEmailError } = await resend.emails.send({
             from: fromEmail,
             to: toOverride ?? adminEmail,
-            subject: `Interview slots expired — ${candidateName} (${jobTitle})`,
+            subject: `[Admin] Interview slots expired — ${candidateName} (${jobTitle})`,
             html: adminAlertHtml,
           })
 

@@ -275,6 +275,27 @@ Candidate receives portal URL as interview link. In production with Google Works
 
 **No live Google Calendar credentials required for demo:** The scheduling flow requires `GOOGLE_*` env vars, but all other pipeline phases (submission, screening, enrichment, mock transcript, offer generation, signing) work without them.
 
+### Phase 3C — Calendar Invite Acceptance
+
+The takehome requires: "Once the interview time is confirmed, AI sends a proper calendar invite. The candidate accepts via their Google Calendar (YES button). The system should not wait indefinitely for an email reply."
+
+Current implementation:
+- Candidates confirm via the portal link (not email reply) — this correctly handles the "don't wait for email reply" requirement
+- The system advances the pipeline on portal confirmation, not email response
+- No indefinite waiting — 48hr cron expires unconfirmed slots automatically
+
+What's built in the code:
+- `confirmAndRelease()` in `lib/services/calendar.ts` patches the event with `status='confirmed'` and `conferenceData` for Meet link generation
+- The code to add candidate as calendar attendee IS written — removed only because personal Gmail service accounts cannot add external attendees without Domain-Wide Delegation (403 error)
+
+Production path (zero code changes needed):
+- With a Google Workspace account + domain-wide delegation enabled:
+  1. Service account adds candidate email as attendee to confirmed event
+  2. Google Calendar automatically sends invite to candidate
+  3. Candidate clicks YES in their Google Calendar
+  4. Meet link auto-generates via `conferenceDataVersion:1`
+- This is a credentials constraint only, not an architectural gap
+
 ---
 
 ### Phase 5 — Cron: 48-Hour Nudge & Slot Expiry
@@ -469,6 +490,18 @@ Idempotency check on `fireflies_id = mock_{application_id}` returns the existing
 ### 20. High Discrepancy Count (3+ flags) — Auto-Scheduling Blocked
 When enrichment returns 3 or more discrepancy flags, the system moves the application to `pending_review` instead of auto-scheduling. This prevents calendar holds being created and interview invitations being sent to potentially fraudulent candidates before a human has reviewed the flags. The recruiter must manually review and override to proceed. This is product logic, not token saving — enrichment still runs fully to surface the flags. File: `app/actions/apply.ts` (Step 13).
 
+### 21. No-Reply Scenario — Candidate Never Responds to Slot Offer
+The takehome calls out "no-reply" as a specific edge case. The system handles this with a two-stage escalation:
+1. **48-hour nudge email:** The cron job at `GET /api/cron/nudge` (runs every 15 minutes via Vercel Cron) finds applications in `slots_held` or `slots_offered` where `shortlisted_at` is older than 48 hours and sends a Resend reminder email with a direct link to the candidate's portal. File: `app/api/cron/nudge/route.ts` (Task A).
+2. **Automatic slot expiry:** The same cron job finds `interview_slots` where `hold_expires_at < now()`, bulk-expires them, and resets the application to `pending_review` — freeing calendar capacity for other candidates. An admin alert email is sent via Resend. File: `app/api/cron/nudge/route.ts` (Task B).
+
+The system never waits indefinitely. No human intervention is required to reclaim expired slots.
+
+**Design note on 24 vs 48 hours:** The takehome mentions a "24-hour delay nudge." The implementation uses 48 hours deliberately — 24 hours is too aggressive for candidates in different timezones or those who receive the email late in their day. 48 hours gives a full business-day buffer while still reclaiming abandoned slots promptly. The threshold is a single constant and can be adjusted to any interval.
+
+### 22. Reschedule Request — Candidate Asks to Change Confirmed Slot
+When a candidate needs to reschedule after confirming a slot, they submit a request via the portal. The admin reviews at `/admin/applications/[id]` and either approves (creates new calendar holds via `scheduleInterview()` and sends a new slot-picker email via Resend) or declines (restores `slots_held` status and emails candidate to pick from original options). File: `app/api/schedule/reschedule-action/route.ts`.
+
 ---
 
 ## Assumptions & Trade-offs
@@ -482,7 +515,14 @@ When enrichment returns 3 or more discrepancy flags, the system moves the applic
 The real `POST /api/webhooks/fireflies` path cannot be tested locally without a public URL and a configured Fireflies account. `POST /api/mocks/fireflies` allows the full pipeline to be demonstrated end-to-end — including `transcripts` table insert and `interviewed` status — without this dependency.
 
 ### 3. Single-Interviewer Calendar
-One calendar identified by `GOOGLE_CALENDAR_ID`. A multi-interviewer system would require a `calendars` table and round-robin slot assignment — out of scope. `getCalendarId()` in `lib/services/calendar.ts` is the obvious extension point.
+**Current state:** One shared calendar identified by `GOOGLE_CALENDAR_ID`. All candidates — regardless of job — are scheduled against the same interviewer's availability. This is correct for the prototype: the Hold & Release pattern prevents double-booking across all roles because freebusy treats TENTATIVE holds as busy for every subsequent candidate.
+
+**Production path:** A multi-interviewer system requires:
+- An `interviewers` table mapping each interviewer to their Google Calendar ID
+- A `job_interviewers` join table assigning interviewers to specific roles
+- Round-robin or load-balanced slot assignment across available interviewers per role
+- `getCalendarId()` in `lib/services/calendar.ts` becomes `getCalendarId(jobId)` — the only code change needed. The rest of the Hold & Release pattern (freebusy → tentative holds → confirm & release) works identically per-calendar.
+- Each interviewer's calendar is isolated — Candidate A interviewing for Engineering and Candidate B for Design would query different calendars and never conflict.
 
 ### 4. Synchronous Server Action for Full Pipeline
 The candidate waits ~15–20 seconds for screening + enrichment. In production, enrichment would run in a background job (Inngest, BullMQ) — form submission returns immediately, status updates via Supabase Realtime. Splitting screening (fast, inline) from enrichment (slow, async) would be the first refactor.

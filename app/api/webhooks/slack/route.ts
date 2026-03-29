@@ -112,27 +112,53 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
 
-  // ── Step C — Handle team_join event ──────────────────────────────────────
-  // Fires when a new user joins the Slack workspace.
-  // Deliver any queued messages for that user's email address.
-  if (event.type === 'event_callback' && event.event?.type === 'team_join') {
+  // ── Step C — Handle team_join or member_joined_channel event ─────────────
+  // team_join: fires when a new user joins the Slack workspace (workspace event)
+  // member_joined_channel: fires when user joins a channel (bot event) — used as
+  //   fallback because team_join requires workspace event subscription which isn't
+  //   available on all Slack app types. New members auto-join #general, triggering this.
+  const eventType = event.event?.type
+  if (event.type === 'event_callback' && (eventType === 'team_join' || eventType === 'member_joined_channel')) {
     const slackToken = process.env.SLACK_BOT_TOKEN
     if (!slackToken) {
       console.warn('[webhooks/slack] SLACK_BOT_TOKEN not set — cannot deliver queued messages')
       return NextResponse.json({ ok: true })
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const newMember: any  = event.event.user
-    const memberEmail: string = newMember?.profile?.email ?? ''
-    const slackUserId: string = newMember?.id ?? ''
+    let memberEmail = ''
+    let slackUserId = ''
+
+    if (eventType === 'team_join') {
+      // team_join includes full user profile
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const newMember: any = event.event.user
+      memberEmail = newMember?.profile?.email ?? ''
+      slackUserId = newMember?.id ?? ''
+    } else {
+      // member_joined_channel — only has user ID, need to fetch email via users.info
+      slackUserId = event.event.user ?? ''
+      if (slackUserId) {
+        try {
+          const qs = new URLSearchParams({ user: slackUserId }).toString()
+          const res = await fetch(`https://slack.com/api/users.info?${qs}`, {
+            headers: { Authorization: `Bearer ${slackToken}` },
+          })
+          const userData = await res.json() as { ok: boolean; user?: { profile?: { email?: string } } }
+          if (userData.ok) {
+            memberEmail = userData.user?.profile?.email ?? ''
+          }
+        } catch (err) {
+          console.error('[webhooks/slack] users.info failed:', err)
+        }
+      }
+    }
 
     if (!memberEmail || !slackUserId) {
-      console.warn('[webhooks/slack] team_join event missing email or user id — skipping')
+      console.warn(`[webhooks/slack] ${eventType} event missing email or user id — skipping`)
       return NextResponse.json({ ok: true })
     }
 
-    console.log(`[webhooks/slack] team_join: ${memberEmail} (${slackUserId}) joined the workspace`)
+    console.log(`[webhooks/slack] ${eventType}: ${memberEmail} (${slackUserId}) joined`)
 
     const supabase = createAdminClient()
 

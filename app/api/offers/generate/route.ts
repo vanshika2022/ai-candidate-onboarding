@@ -117,6 +117,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const jobTeam: string = job?.team ?? ''
   const jobLocation: string = job?.location ?? 'Remote'
 
+  // Extract achievements from structured_data for personalization
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const structuredData = application.structured_data as any
+  const achievements: string[] = Array.isArray(structuredData?.achievements)
+    ? structuredData.achievements
+    : []
+
   // ── 4. Generate offer letter HTML via Claude Sonnet ───────────────────────────
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -142,6 +149,7 @@ BONUS: ${bonus ?? 'N/A'}
 REPORTING TO: ${reporting_manager}
 CUSTOM TERMS: ${custom_terms ?? 'None'}
 AI BRIEF ABOUT CANDIDATE: ${application.ai_brief ?? 'Not available'}
+KEY ACHIEVEMENTS: ${achievements.length > 0 ? achievements.join('; ') : 'Not available'}
 
 Requirements:
 - Full self-contained HTML document (includes <html>, <head>, <body>)
@@ -151,7 +159,7 @@ Requirements:
 - Max-width 720px, centered, white background, subtle border, padding 48px
 - Today's date (${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}) in the header
 - Formal salutation: "Dear ${candidateName},"
-- Opening paragraph welcoming the candidate and referencing the role
+- Opening paragraph welcoming the candidate by name, referencing the role, and acknowledging their specific background using the AI brief and key achievements (make the letter feel personalized to THIS candidate)
 - Compensation section as a styled list with all applicable items:
 ${equityLine}
 ${bonusLine}

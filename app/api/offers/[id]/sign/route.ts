@@ -209,7 +209,7 @@ export async function POST(
       resend.emails.send({
         from: fromEmail,
         to: toOverride ?? adminEmail,
-        subject: `Offer signed — ${candidateName} accepted ${jobTitle}`,
+        subject: `[Admin] Offer signed — ${candidateName} accepted ${jobTitle}`,
         html: adminEmailHtml,
       }),
     ])

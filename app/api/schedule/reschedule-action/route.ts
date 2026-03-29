@@ -3,8 +3,9 @@
  * ─────────────────────────────────────
  * Admin-only endpoint. Approves or declines a candidate's reschedule request.
  *
- * If approved: calls scheduleInterview() to create new calendar holds and
- *              email candidate, then sets reschedule_status = 'new_slots_sent'.
+ * If approved: calls scheduleInterview() to create new calendar holds,
+ *              then sends candidate an email with the slot-picker link,
+ *              and sets reschedule_status = 'new_slots_sent'.
  * If declined: restores status to 'slots_held', sets reschedule_status = 'declined',
  *              and emails candidate to pick from original options.
  *
@@ -79,8 +80,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // ── 4. Handle APPROVE ────────────────────────────────────────────────────
   if (action === 'approve') {
-    // Delegate to scheduleInterview — creates new calendar holds and sends
-    // the candidate an email with the slot-picker portal link
+    // scheduleInterview creates new calendar holds but does NOT send email —
+    // the auto-schedule email only fires during initial submission in apply.ts
     const result = await scheduleInterview(application_id)
 
     if (!result.success) {
@@ -110,21 +111,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         html: `
           <h2>New interview times available</h2>
           <p>Hi ${firstName},</p>
-          <p>We've found new interview slots for your ${jobTitle} interview.</p>
+          <p>We've found new interview slots for your <strong>${jobTitle}</strong> interview.</p>
           <p>Please select your preferred time:</p>
           <p>
             <a href="${portalUrl}"
                style="display:inline-block;background:#4f46e5;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">
-              Select your interview slot &rarr;
+              Select your interview slot →
             </a>
           </p>
           <p>You have 48 hours to select before slots expire.</p>
           <p>Best,<br/>Niural Hiring Team</p>
         `,
       })
-      console.log(`[Reschedule-approve] Email sent to ${toEmail}`)
-    } catch (err) {
-      console.error('[Reschedule-approve] Email failed (non-blocking):', err)
+      console.log(`[Reschedule-approve] Slot selection email sent to ${toEmail}`)
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`[Reschedule-approve] Email failed: ${message}`)
     }
 
     return NextResponse.json({ success: true })
@@ -164,7 +166,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           <p>
             <a href="${portalUrl}"
                style="display:inline-block;background:#4f46e5;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">
-              Select your interview slot &rarr;
+              Select your interview slot →
             </a>
           </p>
           <p>Best,<br/>Niural Hiring Team</p>

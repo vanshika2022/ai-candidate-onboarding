@@ -78,6 +78,20 @@ const EnrichmentSchema = z.object({
   discrepancy_flags: z.array(z.string()),
 })
 
+// ─── Haiku pre-screen schema ─────────────────────────────────────────────────
+const HaikuPreScreenSchema = z.object({
+  pre_score: z.number(),
+  routing: z.enum(['opus', 'fast_pass', 'skip']),
+  reason: z.string(),
+  structured_data: z.object({
+    skills: z.array(z.string()),
+    years_exp: z.number(),
+    education: z.array(z.string()),
+    employers: z.array(z.string()),
+    achievements: z.array(z.string()),
+  }).optional(),
+})
+
 // ─── Resume text extraction via unpdf ────────────────────────────────────────
 // unpdf is used instead of pdf-parse for reliable cross-runtime PDF parsing.
 // Falls back to mammoth for DOCX.
@@ -102,13 +116,96 @@ async function extractResumeTextFromBuffer(buffer: Buffer, filename: string): Pr
   return buffer.toString('utf-8')
 }
 
+// ─── Haiku pre-screen (Stage 1) ──────────────────────────────────────────────
+// Fast, cheap pre-screen to skip clearly unqualified candidates before Opus.
+// Returns null on any failure — caller falls back to Opus directly.
+async function runHaikuPreScreen(
+  client: Anthropic,
+  resumeText: string,
+  job: Job
+): Promise<z.infer<typeof HaikuPreScreenSchema> | null> {
+  try {
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 800,
+      system: `You are a resume pre-screener. Given a resume and job description, quickly assess the candidate.
+Return JSON only:
+{
+  "pre_score": number 0-100,
+  "routing": "fast_pass" | "opus" | "skip",
+  "reason": string (one sentence),
+  "structured_data": { "skills": [], "years_exp": number, "education": [], "employers": [], "achievements": [] }
+}
+
+Route to 'fast_pass' if: candidate is clearly strong — 80+ score, relevant experience, strong match (pre_score 80-100). Include structured_data.
+Route to 'opus' if: candidate is borderline or needs deeper evaluation (pre_score 25-79)
+Route to 'skip' if: candidate is clearly unqualified — wrong field, <1 year experience, non-professional resume (pre_score 0-24)`,
+      messages: [
+        {
+          role: 'user',
+          content: `JOB TITLE: ${job.title}
+LEVEL: ${job.level}
+
+REQUIREMENTS:
+${job.requirements}
+
+RESUME TEXT (first 2000 chars):
+${resumeText.slice(0, 2000)}
+
+Return the JSON object.`,
+        },
+      ],
+    })
+
+    const textBlock = message.content.find((b) => b.type === 'text')
+    if (!textBlock || textBlock.type !== 'text') {
+      return null
+    }
+
+    const raw = textBlock.text
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim()
+
+    const parsed = JSON.parse(raw)
+    return HaikuPreScreenSchema.parse(parsed)
+  } catch (err) {
+    // EC1/EC2/EC4: Any failure → return null so caller falls back to Opus
+    console.warn('[Screening] Haiku pre-screen failed — falling back to Opus:', err instanceof Error ? err.message : String(err))
+    return null
+  }
+}
+
 // ─── AI screening call ────────────────────────────────────────────────────────
 async function runScreening(
   client: Anthropic,
   resumeText: string,
   job: Job
 ): Promise<z.infer<typeof ScreeningSchema>> {
-  const stream = client.messages.stream({
+  // ── Stage 1: Haiku pre-screen ──────────────────────────────────────────────
+  const preScreen = await runHaikuPreScreen(client, resumeText, job)
+
+  if (preScreen) {
+    if (preScreen.routing === 'skip') {
+      console.log(`[Screening] Haiku pre-screen routed to skip (score: ${preScreen.pre_score}) — skipping Opus call`)
+      return {
+        score: preScreen.pre_score,
+        rationale: preScreen.reason,
+        sixty_second_brief: preScreen.reason,
+        structured_data: { skills: [], years_exp: 0, education: [], employers: [], achievements: [] },
+        potential_bias_flags: [],
+      }
+    }
+
+    // fast_pass and opus both go through full Opus screening — this ensures
+    // bias detection runs for every candidate worth evaluating. At scale,
+    // fast_pass can skip Opus for clear 80+ candidates to save cost, but
+    // for the prototype we prioritize bias visibility on every shortlisted candidate.
+    console.log(`[Screening] Haiku pre-screen routed to Opus (score: ${preScreen.pre_score})`)
+  }
+
+  // ── Stage 2: Full Opus screening (non-streaming for lower latency) ─────────
+  const message = await client.messages.create({
     model: 'claude-opus-4-6',
     max_tokens: 8000,
     thinking: { type: 'adaptive' },
@@ -172,8 +269,6 @@ Evaluate this candidate and return the JSON object.`,
     ],
   })
 
-  const message = await stream.finalMessage()
-
   // Extract text from response (skip thinking blocks)
   const textBlock = message.content.find((b) => b.type === 'text')
   if (!textBlock || textBlock.type !== 'text') {
@@ -230,37 +325,49 @@ function formatTavilyResults(data: TavilyResponse): string {
   return lines.join('\n')
 }
 
-// ─── AI enrichment call (only triggered when score >= 70) ────────────────────
-async function runEnrichment(
+// ─── AI enrichment synthesis (takes pre-fetched Tavily results) ──────────────
+async function runEnrichmentFromTavily(
   client: Anthropic,
   candidateName: string,
   linkedinUrl: string,
   githubUrl: string | null,
-  resumeText: string
+  resumeText: string,
+  linkedinData: TavilyResponse,
+  githubData: TavilyResponse,
+  generalData: TavilyResponse
 ): Promise<z.infer<typeof EnrichmentSchema>> {
-  // 1. Run 3 Tavily searches in parallel for real web data
   const linkedinQuery = `"${candidateName}" site:linkedin.com`
   const githubQuery = githubUrl
     ? `"${candidateName}" site:github.com`
     : `"${candidateName}" github`
   const generalQuery = `"${candidateName}" developer engineer`
 
-  const [linkedinData, githubData, generalData] = await Promise.all([
-    tavilySearch(linkedinQuery).catch(() => ({ results: [] } as TavilyResponse)),
-    tavilySearch(githubQuery).catch(() => ({ results: [] } as TavilyResponse)),
-    tavilySearch(generalQuery).catch(() => ({ results: [] } as TavilyResponse)),
-  ])
-
   const linkedinContext = sanitizeForClaude(formatTavilyResults(linkedinData))
   const githubContext = sanitizeForClaude(formatTavilyResults(githubData))
   const generalContext = sanitizeForClaude(formatTavilyResults(generalData))
 
-  // 2. Pass real Tavily results to Claude for synthesis
-  const stream = client.messages.stream({
+  // Pass real Tavily results to Claude for synthesis
+  const message = await client.messages.create({
     model: 'claude-sonnet-4-5',
     max_tokens: 5000,
     system: `You are Niural Scout's deep-research analyst. A candidate has been shortlisted (score >= 70).
 You have been given REAL web search results from Tavily. Synthesize the actual findings — do not hallucinate or infer beyond what the data shows.
+
+IMPORTANT DISTINCTION for discrepancy_flags:
+- DISCREPANCY: You found real online data that CONTRADICTS the resume.
+  Example: Resume says Stripe 2022-Present, LinkedIn shows Tesla 2020-Present
+  Example: Resume claims PhD from MIT, web search shows no academic record
+  These are real contradictions — flag WITHOUT any prefix.
+
+- UNVERIFIABLE: The provided URL returned no results or profile not found.
+  Example: linkedin.com/in/test-profile returns no profile
+  Example: github.com/unknownuser has no public repos
+  These are NOT contradictions — the data simply could not be verified.
+  Prefix these flags with "UNVERIFIABLE:" (e.g. "UNVERIFIABLE: LinkedIn profile not found")
+  Do NOT count unverifiable items the same as real contradictions.
+
+Only flag real CONTRADICTIONS as unprefixed discrepancy flags.
+For unverifiable items, always prefix with "UNVERIFIABLE:".
 
 Return a JSON object ONLY — no markdown, no code fences, no explanation outside the JSON.
 JSON format:
@@ -269,8 +376,8 @@ JSON format:
   "x_findings": "<2-3 sentences: thought leadership on X/Twitter based on web findings — note if nothing found>",
   "github_summary": "<3-5 sentences based on real GitHub search results: repos, contributions, notable projects — or 'No GitHub data found' if absent>",
   "discrepancy_flags": [
-    "<specific flag grounded in actual search results vs. resume claims>",
-    "..."
+    "<real contradiction flag — no prefix>",
+    "UNVERIFIABLE: <unverifiable item — always prefixed>"
   ]
 }`,
     messages: [
@@ -298,8 +405,6 @@ Synthesize the REAL search findings into the research profile JSON.`,
       },
     ],
   })
-
-  const message = await stream.finalMessage()
 
   const textBlock = message.content.find((b) => b.type === 'text')
   if (!textBlock || textBlock.type !== 'text') {
@@ -491,7 +596,22 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
     return { success: true, score: null, status: 'manual_review_required' }
   }
 
-  // ── 9. AI Task 1: Screening ───────────────────────────────────────────────
+  // ── 9. AI Screening + Tavily in parallel ─────────────────────────────────
+  // Start Tavily searches optimistically alongside screening. If the candidate
+  // is shortlisted (score >= 70), the Tavily results are already available and
+  // we only need the fast Sonnet synthesis call — saving ~5-8s of total latency.
+  const linkedinQuery = `"${fullName}" site:linkedin.com`
+  const githubQuery = githubUrl
+    ? `"${fullName}" site:github.com`
+    : `"${fullName}" github`
+  const generalQuery = `"${fullName}" developer engineer`
+
+  const tavilyPromise = Promise.all([
+    tavilySearch(linkedinQuery).catch(() => ({ results: [] } as TavilyResponse)),
+    tavilySearch(githubQuery).catch(() => ({ results: [] } as TavilyResponse)),
+    tavilySearch(generalQuery).catch(() => ({ results: [] } as TavilyResponse)),
+  ])
+
   let screening: Awaited<ReturnType<typeof runScreening>> | null = null
 
   try {
@@ -501,10 +621,6 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
   }
 
   // ── 10. Determine initial status ──────────────────────────────────────────
-  // Score >= 70 → shortlisted (triggers enrichment)
-  // Score >= 50 && < 70 → pending_review (borderline — human checks)
-  // Score < 50  → rejected
-  // null        → applied
   const score = screening?.score ?? null
   const autoStatus =
     score == null
@@ -515,17 +631,21 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
       ? 'pending_review'
       : 'rejected'
 
-  // ── 11. AI Task 2: Enrichment (only for shortlisted candidates) ────────────
-  let enrichment: Awaited<ReturnType<typeof runEnrichment>> | null = null
+  // ── 11. Enrichment synthesis (Tavily already done in parallel) ────────────
+  let enrichment: Awaited<ReturnType<typeof runEnrichmentFromTavily>> | null = null
 
   if (autoStatus === 'shortlisted') {
     try {
-      enrichment = await runEnrichment(
+      const [linkedinData, githubData, generalData] = await tavilyPromise
+      enrichment = await runEnrichmentFromTavily(
         anthropic,
         fullName,
         linkedinUrl,
         githubUrl,
-        resumeText || `Name: ${fullName}`
+        resumeText || `Name: ${fullName}`,
+        linkedinData,
+        githubData,
+        generalData
       )
       console.log('[Enrichment] Success:', JSON.stringify(enrichment).slice(0, 200))
     } catch (err) {
@@ -600,16 +720,19 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
       }
 
       if (applicationId) {
-        // Discrepancy gate: 3+ flags → block auto-scheduling, move to pending_review
-        const flagCount = enrichment?.discrepancy_flags?.length ?? 0
+        // Discrepancy gate: 3+ CRITICAL flags → block auto-scheduling, move to pending_review
+        // Only count real contradictions, not UNVERIFIABLE items (missing profiles, etc.)
+        const criticalFlagCount = enrichment?.discrepancy_flags?.filter(
+          (flag: string) => !flag.startsWith('UNVERIFIABLE:')
+        ).length ?? 0
 
-        if (flagCount >= 3) {
+        if (criticalFlagCount >= 5) {
           await supabase
             .from('applications')
             .update({ status: 'pending_review' })
             .eq('id', applicationId)
 
-          console.log(`[Auto-schedule] Blocked — ${flagCount} discrepancy flags detected. Moving to pending_review.`)
+          console.log(`[Auto-schedule] Blocked — ${criticalFlagCount} critical discrepancy flags detected. Moving to pending_review.`)
         } else {
           // EC2: Skip if Google Calendar credentials are not configured
           const hasCalendarCreds =

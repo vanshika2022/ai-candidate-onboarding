@@ -52,7 +52,7 @@ export function getCalendarId(): string {
 }
 
 // ─── Find free 45-min blocks within business hours ───────────────────────────
-export async function getAvailableSlots(): Promise<Array<{ start: string; end: string }>> {
+export async function getAvailableSlots(maxSlots?: number): Promise<Array<{ start: string; end: string }>> {
   const calendar   = getCalendarClient()
   const calendarId = getCalendarId()
 
@@ -82,7 +82,8 @@ export async function getAvailableSlots(): Promise<Array<{ start: string; end: s
   const m = cursor.getMinutes()
   cursor.setMinutes(m < 30 ? 30 : 60, 0, 0)
 
-  while (slots.length < SLOTS_TO_OFFER && cursor < windowEnd) {
+  const limit = maxSlots ?? SLOTS_TO_OFFER
+  while (slots.length < limit && cursor < windowEnd) {
     const dow = cursor.getDay()
 
     // Skip weekends

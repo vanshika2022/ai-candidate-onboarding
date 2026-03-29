@@ -94,7 +94,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     await resend.emails.send({
       from: process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
       to: toEmail,
-      subject: `Reschedule request — ${candidateName} for ${jobTitle}`,
+      subject: `[Admin] Reschedule request — ${candidateName} for ${jobTitle}`,
       html: `
         <h2>Reschedule Request</h2>
         <p><strong>${candidateName}</strong> has requested different interview times for <strong>${jobTitle}</strong>.</p>

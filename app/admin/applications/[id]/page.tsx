@@ -15,6 +15,7 @@ import { StatusOverride } from './StatusOverride'
 import { InviteButton } from '@/components/InviteButton'
 import { OfferActions } from './OfferActions'
 import { ReschedulePanel } from './ReschedulePanel'
+import { MockTranscriptButton } from './MockTranscriptButton'
 
 // ── Server action: proxy reschedule-action API with ADMIN_SECRET ─────────────
 async function handleRescheduleAction(
@@ -42,6 +43,53 @@ async function handleRescheduleAction(
     return data
   } catch {
     return { error: 'Failed to process reschedule action' }
+  }
+}
+
+// ── Server action: inject mock Fireflies transcript with ADMIN_SECRET ────────
+async function handleMockTranscript(
+  applicationId: string
+): Promise<{ success?: boolean; error?: string; duplicate?: boolean }> {
+  'use server'
+  try {
+    const res = await fetch(
+      `${process.env.NEXT_PUBLIC_APP_URL}/api/mocks/fireflies`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.ADMIN_SECRET}`,
+        },
+        body: JSON.stringify({ application_id: applicationId }),
+      }
+    )
+    return await res.json()
+  } catch {
+    return { error: 'Failed to inject mock transcript' }
+  }
+}
+
+// ── Server action: fetch AI-filtered slot preview with ADMIN_SECRET ──────────
+async function handleFetchSlotPreview(
+  applicationId: string,
+  excludeSlots: string[]
+): Promise<{ slots?: Array<{ start: string; end: string; label: string }>; ai_reasoning?: string; no_calendar?: boolean; error?: string }> {
+  'use server'
+  try {
+    const res = await fetch(
+      `${process.env.NEXT_PUBLIC_APP_URL}/api/schedule/preview-slots`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.ADMIN_SECRET}`,
+        },
+        body: JSON.stringify({ application_id: applicationId, exclude_slots: excludeSlots }),
+      }
+    )
+    return await res.json()
+  } catch {
+    return { error: 'Failed to fetch slot preview' }
   }
 }
 
@@ -204,6 +252,7 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
     application.status === 'confirmed' || application.status === 'interview_scheduled' ? 'scheduled' :
     application.status === 'slots_held' || application.status === 'slots_offered' ? 'slots_offered' :
     'pending'
+  const showMockTranscript = ['confirmed', 'interview_scheduled'].includes(application.status)
   const showOfferActions = ['interviewed', 'offer_sent', 'hired'].includes(application.status)
 
   return (
@@ -223,6 +272,7 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
         rescheduleReason={rescheduleReason}
         rescheduleRequestedAt={rescheduleRequestedAt}
         onAction={handleRescheduleAction}
+        onFetchSlots={handleFetchSlotPreview}
       />
 
       {/* Hero card */}
@@ -536,6 +586,19 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
         <div className="space-y-6">
 
           {/* ── Status-based action panel ─────────────────────────────────────── */}
+          {/* ── Mock transcript button (confirmed status) ────────────────────── */}
+          {showMockTranscript && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-card-border dark:bg-card">
+              <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <FileText size={14} className="text-violet-500" /> Interview
+              </h2>
+              <MockTranscriptButton
+                applicationId={application.id}
+                onInject={handleMockTranscript}
+              />
+            </div>
+          )}
+
           {(showInvite || showOfferActions) && (
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-card-border dark:bg-card">
               <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">

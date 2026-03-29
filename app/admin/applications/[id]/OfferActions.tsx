@@ -144,7 +144,7 @@ export function OfferActions({ applicationId, jobTitle, draftOffer: initialOffer
               <div className="mt-2 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white dark:border-card-border">
                 <div
                   className="offer-letter-body scale-[0.7] origin-top-left"
-                  style={{ width: '143%' }}
+                  style={{ width: '143%', background: '#ffffff', color: '#0f172a' }}
                   dangerouslySetInnerHTML={{ __html: offer.content }}
                 />
               </div>
