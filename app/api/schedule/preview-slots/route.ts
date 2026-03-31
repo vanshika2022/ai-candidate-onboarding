@@ -137,7 +137,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // ── 7. Apply preference filter (programmatic — fast and accurate) ──────────
   const prefs = await prefsPromise
 
-  if (prefs && (prefs.preferred_days.length > 0 || prefs.earliest_hour > 0 || prefs.latest_hour < 24)) {
+  // Only apply filter if Haiku returned real preferences (not just defaults 9-17 with no days)
+  const hasRealPrefs = prefs && (
+    prefs.preferred_days.length > 0 ||
+    prefs.earliest_hour !== 9 ||
+    prefs.latest_hour !== 17
+  )
+  if (hasRealPrefs && prefs) {
     const allowedDays = new Set(
       prefs.preferred_days
         .map(d => DAY_MAP[d.toLowerCase()])
@@ -146,10 +152,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     const filtered = formattedSlots.filter(slot => {
       const dt = new Date(slot.start)
-      // Convert to interviewer timezone for accurate day/hour check
-      const tzDate = new Date(dt.toLocaleString('en-US', { timeZone: tz }))
-      const day = tzDate.getDay()
-      const hour = tzDate.getHours()
+      // Extract day and hour in the interviewer's timezone using Intl API
+      const dayStr = dt.toLocaleDateString('en-US', { weekday: 'long', timeZone: tz }).toLowerCase()
+      const hourStr = dt.toLocaleTimeString('en-US', { hour: 'numeric', hour12: false, timeZone: tz })
+      const day = DAY_MAP[dayStr] ?? dt.getDay()
+      const hour = parseInt(hourStr, 10)
 
       // Day filter: if candidate specified days, only include those
       if (allowedDays.size > 0 && !allowedDays.has(day)) return false

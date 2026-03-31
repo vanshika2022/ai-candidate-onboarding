@@ -102,6 +102,23 @@ export async function generateOffer(
   const jobTeam: string   = job?.team ?? ''
   const jobLocation: string = job?.location ?? 'Remote'
 
+  // Fetch interview feedback (required to generate offer)
+  const { data: feedbackRow } = await supabase
+    .from('interview_feedback')
+    .select('rating, comments')
+    .eq('application_id', applicationId)
+    .maybeSingle()
+
+  if (!feedbackRow) {
+    return {
+      success: false,
+      error: 'Interview feedback is required before generating an offer. Please submit feedback first.',
+    }
+  }
+
+  const interviewerComments: string = feedbackRow.comments ?? ''
+  const interviewerRating: number = feedbackRow.rating ?? 0
+
   // Build the Claude prompt
   const equityLine = equity ? `<li><strong>Equity:</strong> ${equity}</li>` : ''
   const bonusLine  = bonus  ? `<li><strong>Performance Bonus:</strong> ${bonus}</li>` : ''
@@ -129,6 +146,8 @@ BONUS: ${bonus ?? 'N/A'}
 REPORTING TO: ${reportingManager}
 CUSTOM TERMS: ${customTerms ?? 'None'}
 AI BRIEF ABOUT CANDIDATE: ${application.ai_brief ?? 'Not available'}
+INTERVIEWER RATING: ${interviewerRating}/5
+INTERVIEWER COMMENTS: ${interviewerComments}
 
 Requirements:
 - Full self-contained HTML document (includes <html>, <head>, <body>)
@@ -138,7 +157,7 @@ Requirements:
 - Max-width 720px, centered, white background, subtle border, padding 48px
 - Today's date (${todayFormatted}) in the header
 - Formal salutation: "Dear ${candidateName},"
-- Opening paragraph welcoming the candidate and referencing the role
+- Opening paragraph welcoming the candidate and referencing the role, weaving in the interviewer's positive comments naturally (e.g. if comments mention cultural fit, say "we believe you'd be a great cultural fit"; if they mention technical strength, reference that). Use the interviewer comments to make the letter feel warm and specific to THIS candidate. Only include positive sentiments — do not reference any negative or neutral observations.
 - Compensation section as a styled list with all applicable items:
 ${equityLine}
 ${bonusLine}

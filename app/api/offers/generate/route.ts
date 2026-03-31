@@ -124,6 +124,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     ? structuredData.achievements
     : []
 
+  // Fetch interview feedback (required to generate offer)
+  const { data: feedbackRow } = await supabase
+    .from('interview_feedback')
+    .select('rating, comments')
+    .eq('application_id', application_id)
+    .maybeSingle()
+
+  if (!feedbackRow) {
+    return NextResponse.json(
+      { error: 'Interview feedback is required before generating an offer. Please submit feedback first.' },
+      { status: 400 }
+    )
+  }
+
+  const interviewerComments: string = feedbackRow.comments ?? ''
+  const interviewerRating: number = feedbackRow.rating ?? 0
+
   // ── 4. Generate offer letter HTML via Claude Sonnet ───────────────────────────
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -150,6 +167,8 @@ REPORTING TO: ${reporting_manager}
 CUSTOM TERMS: ${custom_terms ?? 'None'}
 AI BRIEF ABOUT CANDIDATE: ${application.ai_brief ?? 'Not available'}
 KEY ACHIEVEMENTS: ${achievements.length > 0 ? achievements.join('; ') : 'Not available'}
+INTERVIEWER RATING: ${interviewerRating}/5
+INTERVIEWER COMMENTS: ${interviewerComments}
 
 Requirements:
 - Full self-contained HTML document (includes <html>, <head>, <body>)
@@ -159,7 +178,7 @@ Requirements:
 - Max-width 720px, centered, white background, subtle border, padding 48px
 - Today's date (${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}) in the header
 - Formal salutation: "Dear ${candidateName},"
-- Opening paragraph welcoming the candidate by name, referencing the role, and acknowledging their specific background using the AI brief and key achievements (make the letter feel personalized to THIS candidate)
+- Opening paragraph welcoming the candidate by name, referencing the role, and acknowledging their specific background using the AI brief, key achievements, AND the interviewer's comments. Weave in the interviewer's positive observations naturally (e.g. if comments mention cultural fit, say "we believe you'd be a great cultural fit"; if they mention technical strength, reference that). Only include positive sentiments — do not reference any negative or neutral observations. Make the letter feel personalized to THIS candidate.
 - Compensation section as a styled list with all applicable items:
 ${equityLine}
 ${bonusLine}

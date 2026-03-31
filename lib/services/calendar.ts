@@ -51,10 +51,25 @@ export function getCalendarId(): string {
   return process.env.GOOGLE_CALENDAR_ID!
 }
 
+// ─── Helper: get hour/day-of-week in interviewer's timezone ─────────────────
+function getInTz(date: Date, tz: string) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour: 'numeric', hour12: false,
+    minute: 'numeric',
+    weekday: 'short',
+  }).formatToParts(date)
+  const hour   = Number(parts.find(p => p.type === 'hour')?.value ?? 0)
+  const minute = Number(parts.find(p => p.type === 'minute')?.value ?? 0)
+  const dow    = parts.find(p => p.type === 'weekday')?.value ?? ''
+  return { hour, minute, dow }
+}
+
 // ─── Find free 45-min blocks within business hours ───────────────────────────
 export async function getAvailableSlots(maxSlots?: number): Promise<Array<{ start: string; end: string }>> {
   const calendar   = getCalendarClient()
   const calendarId = getCalendarId()
+  const tz = process.env.INTERVIEWER_TIMEZONE ?? 'America/New_York'
 
   const windowStart = new Date()
   windowStart.setHours(windowStart.getHours() + 2) // at least 2 hrs buffer
@@ -66,7 +81,7 @@ export async function getAvailableSlots(maxSlots?: number): Promise<Array<{ star
     requestBody: {
       timeMin: windowStart.toISOString(),
       timeMax: windowEnd.toISOString(),
-      timeZone: process.env.INTERVIEWER_TIMEZONE ?? 'America/New_York',
+      timeZone: tz,
       items: [{ id: calendarId }],
     },
   })
@@ -84,24 +99,23 @@ export async function getAvailableSlots(maxSlots?: number): Promise<Array<{ star
 
   const limit = maxSlots ?? SLOTS_TO_OFFER
   while (slots.length < limit && cursor < windowEnd) {
-    const dow = cursor.getDay()
+    const { hour: h, dow } = getInTz(cursor, tz)
 
-    // Skip weekends
-    if (dow === 0) { cursor.setDate(cursor.getDate() + 1); cursor.setHours(BUSINESS_START_HOUR, 0, 0, 0); continue }
-    if (dow === 6) { cursor.setDate(cursor.getDate() + 2); cursor.setHours(BUSINESS_START_HOUR, 0, 0, 0); continue }
+    // Skip weekends (in interviewer's timezone)
+    if (dow === 'Sun') { cursor.setTime(cursor.getTime() + 24 * 60 * 60 * 1000); continue }
+    if (dow === 'Sat') { cursor.setTime(cursor.getTime() + 48 * 60 * 60 * 1000); continue }
 
-    const h = cursor.getHours()
-    if (h < BUSINESS_START_HOUR) { cursor.setHours(BUSINESS_START_HOUR, 0, 0, 0); continue }
-    if (h >= BUSINESS_END_HOUR)  { cursor.setDate(cursor.getDate() + 1); cursor.setHours(BUSINESS_START_HOUR, 0, 0, 0); continue }
+    if (h < BUSINESS_START_HOUR) { cursor.setTime(cursor.getTime() + 30 * 60 * 1000); continue }
+    if (h >= BUSINESS_END_HOUR)  { cursor.setTime(cursor.getTime() + 30 * 60 * 1000); continue }
 
     const slotStartMs = cursor.getTime()
     const slotEndMs   = slotStartMs + SLOT_DURATION_MS
     const slotEnd     = new Date(slotEndMs)
 
-    // Slot must finish before end of business
-    if (slotEnd.getHours() > BUSINESS_END_HOUR || (slotEnd.getHours() === BUSINESS_END_HOUR && slotEnd.getMinutes() > 0)) {
-      cursor.setDate(cursor.getDate() + 1)
-      cursor.setHours(BUSINESS_START_HOUR, 0, 0, 0)
+    // Slot must finish before end of business (in interviewer's tz)
+    const { hour: endH, minute: endM } = getInTz(slotEnd, tz)
+    if (endH > BUSINESS_END_HOUR || (endH === BUSINESS_END_HOUR && endM > 0)) {
+      cursor.setTime(cursor.getTime() + 30 * 60 * 1000)
       continue
     }
 

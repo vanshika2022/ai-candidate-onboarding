@@ -17,6 +17,7 @@ Tailwind CSS, Resend, Google Calendar API, Tavily API, Fireflies.ai, signature_p
 - All Resend `send` calls: `const to = process.env.RESEND_TO_OVERRIDE || candidateEmail`
 - Every Claude API call must have a Zod schema that validates the response before any DB write
 - File uploads are validated server-side before any AI call or storage write (max 3 MB, PDF/DOCX only)
+- Resume text is capped before every AI call: Haiku gets first 2,000 chars, Opus gets first 12,000 chars (~3k tokens), enrichment gets first 4,000 chars — prevents oversized resumes from consuming unbounded tokens
 
 ---
 
@@ -24,10 +25,12 @@ Tailwind CSS, Resend, Google Calendar API, Tavily API, Fireflies.ai, signature_p
 
 ```
 applied → pending_review → shortlisted → slots_held → confirmed →
-                                                               interviewed → offer_sent → hired
+                                              interviewed → [feedback required] → offer_sent → hired
 applied → rejected
 applied → manual_review_required
 ```
+
+**Post-Interview Feedback Gate:** After an interview is completed (`interviewed` status), the admin **must** submit interview feedback (rating 1–5 + comments) before generating an offer letter. The interviewer's positive comments are woven into the offer letter by Claude to personalize it (e.g. "great cultural fit", "strong technical skills").
 
 Full status enum (defined in `lib/supabase.ts → AppStatus`):
 `applied` | `screening` | `shortlisted` | `slots_offered` | `slots_held` |
@@ -84,6 +87,7 @@ supabase/migrations/20240101000002_intelligence_columns.sql — ai_brief, discre
 supabase/migrations/20240101000003_disable_rls.sql         — disables RLS for prototype (admin client used everywhere)
 supabase/migrations/20240101000004_interview_link.sql      — interview_link column on applications
 supabase/migrations/20240101000005_new_status_values.sql   — adds pending_review, manual_review_required statuses
+supabase/migrations/20240101000007_interview_feedback.sql   — interview_feedback table (rating + comments, gates offer generation)
 supabase/migrations/add_missing_columns.sql                — has_discrepancies column + pending_slack_messages table
 ```
 
@@ -164,7 +168,8 @@ INTEGRATION LAYER
    - All other TENTATIVE holds are deleted
    - Calendar invite with Meet link is sent to candidate's email
 10. Interview happens — Fireflies bot joins, records, and POSTs transcript to `/api/webhooks/fireflies`
-11. Admin generates offer letter — form at `/admin/applications/[id]` collects salary, equity, start date, manager; Claude Sonnet drafts complete HTML offer letter
+11. Admin submits interview feedback — rating (1–5 stars) and comments (required) via the Interview Feedback panel on the candidate detail page. Comments inform offer personalization
+12. Admin generates offer letter — form at `/admin/applications/[id]` collects salary, equity, start date, manager; Claude Sonnet drafts complete HTML offer letter personalized with interviewer's positive comments
 12. Admin reviews and clicks Send — candidate receives email with link to `/sign/[offerId]`
 13. Candidate reads offer at `/sign/[id]`, draws signature on canvas, checks agreement box, clicks Sign
 14. `/api/offers/[id]/sign` validates offer is still `sent`, records signature data, IP, and timestamp; transitions offer → `signed`, application → `hired`
@@ -187,7 +192,8 @@ INTEGRATION LAYER
 5. Schedule Interview button (InviteButton component): triggers `scheduleInterview` Server Action which queries Google Calendar freebusy, creates 5 TENTATIVE holds, stores slot data, emails candidate
 6. After candidate confirms slot: calendar event upgrades to CONFIRMED, Google Meet link stored in `interview_link`
 7. Post-interview: full Fireflies transcript visible at `/api/transcripts/[applicationId]` (admin-only, Bearer auth)
-8. Generate Offer form: collects job title, start date, salary, currency, equity, bonus, reporting manager, custom terms; Claude Sonnet drafts offer letter HTML
+8. Interview Feedback panel: admin must submit a rating (1–5 stars) and written comments (both required) before the offer form becomes available. Comments are fed into Claude's offer letter prompt for personalization
+9. Generate Offer form: collects job title, start date, salary, currency, equity, bonus, reporting manager, custom terms; Claude Sonnet drafts offer letter HTML, weaving in positive interviewer feedback
 9. Admin reviews rendered offer letter, clicks Send — candidate email fires via Resend
 10. Dashboard updates the moment offer is signed (revalidate = 0 on all admin pages)
 11. Admin receives Slack/email notification on hire — includes discrepancy warning if `has_discrepancies = true`
@@ -289,6 +295,7 @@ INTEGRATION LAYER
 | **Calendar slot conflict (two candidates, same slot)** | TENTATIVE holds created immediately on admin invite. Once a hold exists, `freebusy` query returns that block as busy for all subsequent candidates. No slot is ever offered twice. | `lib/services/calendar.ts → createTentativeHolds` |
 | **Candidate doesn't respond to slot offer** | TENTATIVE holds remain. Admin can re-invite with new slots. Production: cron job to release holds older than 48 hours. | `lib/services/calendar.ts` |
 | **Borderline AI score (50–69)** | Status set to `pending_review` — not auto-rejected, not auto-shortlisted. Human recruiter views the candidate and makes the call. | `app/actions/apply.ts:300` |
+| **Offer generated without feedback** | Both `generateOffer` server action and `/api/offers/generate` route check for existing `interview_feedback` row. Returns error if missing — UI also gates the offer form behind feedback submission. | `app/actions/offer.ts`, `app/api/offers/generate/route.ts` |
 | **Candidate signs offer twice** | `/api/offers/[id]/sign` checks `offer.status === 'signed'` first. Returns 400 "already been signed" with no DB mutation. | `app/api/offers/[id]/sign/route.ts:47` |
 | **Discrepancy flags on a hired candidate** | `has_discrepancies` stored permanently in DB. Admin hire-alert email from `/api/offers/[id]/sign` includes an explicit note if the candidate had flags. | `app/api/offers/[id]/sign/route.ts` |
 | **Claude returns malformed JSON** | `JSON.parse` or `ZodError` is caught in `try/catch`. Screening failure → application inserted as `applied` with null score. Enrichment failure → silently skipped, application shortlisted without research. | `app/actions/apply.ts` |

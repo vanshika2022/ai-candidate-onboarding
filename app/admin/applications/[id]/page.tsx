@@ -14,6 +14,7 @@ import {
 import { StatusOverride } from './StatusOverride'
 import { InviteButton } from '@/components/InviteButton'
 import { OfferActions } from './OfferActions'
+import { InterviewFeedback } from './InterviewFeedback'
 import { ReschedulePanel } from './ReschedulePanel'
 import { MockTranscriptButton } from './MockTranscriptButton'
 
@@ -246,6 +247,17 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
     ? { id: offerRow.id, status: offerRow.status as 'draft' | 'sent' | 'signed', content: offerRow.content }
     : null
 
+  // Fetch interview feedback (if any)
+  const { data: feedbackRow } = await supabase
+    .from('interview_feedback')
+    .select('rating, comments')
+    .eq('application_id', params.id)
+    .maybeSingle()
+
+  const interviewFeedback = feedbackRow
+    ? { rating: feedbackRow.rating as number, comments: feedbackRow.comments as string }
+    : null
+
   // Determine which action buttons to show in the right column
   const showInvite = ['shortlisted', 'pending_review'].includes(application.status)
   const inviteStage =
@@ -253,7 +265,8 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
     application.status === 'slots_held' || application.status === 'slots_offered' ? 'slots_offered' :
     'pending'
   const showMockTranscript = ['confirmed', 'interview_scheduled'].includes(application.status)
-  const showOfferActions = ['interviewed', 'offer_sent', 'hired'].includes(application.status)
+  const showFeedback = ['interviewed', 'offer_sent', 'hired'].includes(application.status)
+  const showOfferActions = ['interviewed', 'offer_sent', 'hired'].includes(application.status) && interviewFeedback !== null
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
@@ -599,6 +612,20 @@ export default async function ApplicationDetailPage({ params }: PageProps) {
             </div>
           )}
 
+          {/* Interview Feedback (gates offer generation) */}
+          {showFeedback && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-card-border dark:bg-card">
+              <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <Star size={14} className="text-amber-500" /> Interview Feedback
+              </h2>
+              <InterviewFeedback
+                applicationId={application.id}
+                existingFeedback={interviewFeedback}
+              />
+            </div>
+          )}
+
+          {/* Schedule Interview / Offer Letter */}
           {(showInvite || showOfferActions) && (
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-card-border dark:bg-card">
               <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">

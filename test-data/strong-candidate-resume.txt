@@ -1,0 +1,48 @@
+PRIYA SHARMA
+priya.sharma.dev@gmail.com | linkedin.com/in/priyasharmadev | github.com/priyasharma-eng
+San Francisco, CA
+
+SUMMARY
+Staff Software Engineer with 7+ years building distributed systems at scale. Expert in backend architecture, LLM integration, and high-throughput data pipelines. Passionate about AI-native tooling and developer experience.
+
+EXPERIENCE
+
+Staff Engineer — Meridian Payments (Series C, $180M raised)
+Jan 2021 – Present | San Francisco, CA
+- Architected core transaction processing platform handling 2.3M transactions/day with 99.97% uptime SLA
+- Led migration from monolith to event-driven microservices (Kafka, gRPC), reducing p99 latency from 340ms to 48ms
+- Built LLM-powered fraud detection pipeline using Claude API — reduced false positives by 34% while maintaining 99.2% recall
+- Designed and shipped prompt regression testing framework (200+ golden test cases) that blocks deploys on accuracy drops
+- Managed team of 4 engineers; mentored 2 junior engineers to mid-level promotion within 18 months
+- Implemented Redis caching layer for LLM calls (18% cache hit rate) saving $12K/month in API costs
+
+Senior Software Engineer — Cloudbridge (YC W19)
+Mar 2018 – Dec 2020 | Remote
+- Built real-time analytics pipeline processing 500K events/second using Kafka Streams and ClickHouse
+- Designed zero-downtime migration strategy for 400M+ row PostgreSQL tables using shadow table pattern
+- Led incident response for critical production outage (connection pool exhaustion from index lock cascade) — recovered in 22 minutes
+- Implemented distributed tracing (OpenTelemetry) across 23 microservices, reducing MTTR from 45min to 12min
+
+Software Engineer — DataStack Inc.
+Jun 2016 – Feb 2018 | New York, NY
+- Developed RESTful APIs serving 10M requests/day using Node.js and Express
+- Built automated CI/CD pipeline (GitHub Actions, Docker, AWS ECS) reducing deploy time from 45min to 8min
+- Created internal developer portal used by 60+ engineers for service discovery and API documentation
+
+EDUCATION
+
+B.S. Computer Science — Carnegie Mellon University, 2016
+GPA: 3.7/4.0 | Dean's List 6 semesters
+
+SKILLS
+
+Languages: TypeScript, Python, Go, SQL, Rust (learning)
+Infrastructure: AWS (ECS, SQS, Lambda, RDS), Kafka, Redis, Docker, Kubernetes, Terraform
+Databases: PostgreSQL, ClickHouse, DynamoDB, Redis
+AI/ML: Claude API, OpenAI API, LangChain, prompt engineering, evaluation frameworks
+Practices: System design, distributed systems, event sourcing, CQRS, observability (Datadog, OpenTelemetry)
+
+ACHIEVEMENTS
+- Speaker at KubeCon 2023: "Scaling LLM Inference in Production Without Breaking the Bank"
+- Open-source contributor: kafka-connect-transforms (1.2K GitHub stars)
+- Led company-wide SLO adoption initiative — defined SLOs for 15 critical services

@@ -150,6 +150,7 @@ export async function confirmInterviewSlot(
   // 3. Send confirmation email to candidate — never fail confirmation if email fails
   const interviewLink = meetLink ?? `${process.env.NEXT_PUBLIC_APP_URL}/portal/${applicationId}`
   const firstName = candidateName.split(' ')[0]
+  const tz = process.env.INTERVIEWER_TIMEZONE ?? 'America/New_York'
   const interviewDate = new Date(selectedSlot.start).toLocaleString('en-US', {
     weekday: 'long',
     year: 'numeric',
@@ -158,6 +159,7 @@ export async function confirmInterviewSlot(
     hour: 'numeric',
     minute: '2-digit',
     timeZoneName: 'short',
+    timeZone: tz,
   })
 
   try {

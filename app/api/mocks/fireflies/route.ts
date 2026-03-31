@@ -31,108 +31,108 @@ function buildFixtureTranscript(): { summary: string; entries: TranscriptEntry[]
   const entries: TranscriptEntry[] = [
     {
       speaker: 'Sarah (Interviewer)',
-      text: "Welcome, Alex — great to meet you. We have about an hour today. I'll kick us off with a quick intro, then hand to Mike for the technical deep-dive, and Priya will cover culture and process. Sound good?",
+      text: "Thanks for joining us today. We have about 45 minutes. I'll start with some background questions, then we'll get into a technical discussion with Mike, and Priya will wrap up with a few team and culture questions.",
       timestamp: 0,
     },
     {
-      speaker: 'Alex (Candidate)',
-      text: "Perfect, thanks Sarah. I've been looking forward to this. I've spent the last seven years building and scaling backend infrastructure — most recently as a Staff Engineer at a Series C payments company where I owned the core transaction processing platform.",
-      timestamp: 22,
+      speaker: 'Candidate',
+      text: "Sounds great. Happy to be here. I've been doing backend and infrastructure work for the last several years, mostly in TypeScript and Node, working on API platforms and data pipelines. Most recently I've been focused on building systems that need to handle a lot of throughput while staying reliable.",
+      timestamp: 18,
+    },
+    {
+      speaker: 'Sarah (Interviewer)',
+      text: "Tell me about a system you built that had to make decisions automatically but still keep humans in the loop for important calls.",
+      timestamp: 52,
+    },
+    {
+      speaker: 'Candidate',
+      text: "Good question. We had a fraud detection system that scored transactions in real time. Anything above 90 was auto-blocked, anything below 30 was auto-approved, and everything in between went to a human reviewer. The key was getting the thresholds right. Too strict and you block legitimate customers. Too loose and fraud gets through. We ended up tuning the thresholds weekly based on false positive rates and letting the ops team adjust them without a code deploy.",
+      timestamp: 68,
     },
     {
       speaker: 'Mike (Tech Lead)',
-      text: "Great background. Let's jump straight into system design. Say we need to process a million job applications per month — each triggers an async AI screening job that calls an LLM and writes structured output back to Postgres. Walk me through how you'd architect that end-to-end.",
-      timestamp: 58,
+      text: "That's interesting because we deal with a similar problem here. When you have an AI making a screening decision about a person, how do you think about where to draw the line between automation and human review?",
+      timestamp: 120,
     },
     {
-      speaker: 'Alex (Candidate)',
-      text: "I'd decouple ingestion from processing using a durable message queue — SQS or Kafka depending on your ops maturity. Each application submission publishes an event; a horizontally-scaled worker pool consumes it, calls the LLM with a timeout, validates the JSON output via schema, and writes to Postgres. The workers are stateless so auto-scaling is straightforward.",
-      timestamp: 82,
-    },
-    {
-      speaker: 'Mike (Tech Lead)',
-      text: "What happens when the LLM call times out or returns a malformed response? Walk me through the failure path.",
+      speaker: 'Candidate',
+      text: "I think about it in terms of consequences. If the AI gets it wrong, what happens? For low stakes decisions, automate fully. For high stakes, the AI should recommend but a human should confirm. The worst case is when the AI makes a high stakes decision silently and nobody reviews it. You need clear routing. Clear cases go fast, ambiguous cases get flagged, and the human always has an override with a logged reason.",
       timestamp: 140,
     },
     {
-      speaker: 'Alex (Candidate)',
-      text: "The worker retries up to three times with exponential backoff — 1s, 4s, 16s. If all three fail, the message lands in a dead-letter queue and the application row is flagged as manual_review_required so a human can intervene. We never silently drop a record. The DLQ triggers a CloudWatch alarm so ops is paged within five minutes.",
-      timestamp: 163,
-    },
-    {
       speaker: 'Mike (Tech Lead)',
-      text: "Good. How do you avoid duplicate processing if a worker crashes mid-job and the message becomes visible again?",
-      timestamp: 218,
+      text: "How would you validate that an LLM is actually returning reliable structured output? We've had issues where the model returns slightly different formats depending on the input.",
+      timestamp: 195,
     },
     {
-      speaker: 'Alex (Candidate)',
-      text: "All writes are idempotent — we use an upsert keyed on application_id with a processed_at timestamp. If the row already exists we skip the LLM call and ack the message. The LLM call itself is the expensive non-idempotent step, so we write a lock record before calling and check for it on retry.",
-      timestamp: 238,
+      speaker: 'Candidate',
+      text: "Schema validation on every response, no exceptions. I'd use something like Zod to define the exact shape you expect and parse every response through it before writing to the database. If it fails validation, don't crash, just route it to a fallback path. Maybe flag it for manual review or retry with a simpler prompt. The important thing is you never let bad data into your database silently. A null score that gets stored as zero looks like a real score and nobody catches it.",
+      timestamp: 212,
     },
     {
       speaker: 'Sarah (Interviewer)',
-      text: "Let's shift to past experience. Tell me about the most technically challenging incident you've managed in production — what happened, how you responded, and what changed afterward.",
-      timestamp: 292,
+      text: "When you're working with external APIs and web data that might be unreliable, how do you handle that in a pipeline?",
+      timestamp: 268,
     },
     {
-      speaker: 'Alex (Candidate)',
-      text: "At my last company we had a zero-downtime migration go wrong. A new index on a 400-million-row table held an exclusive lock longer than expected and cascaded into connection pool exhaustion. We saw latency spike from 12ms to 8 seconds across all endpoints within 90 seconds of deploy. I rolled back the migration immediately, coordinated a war-room with five engineers, and we had full recovery in 22 minutes. The post-mortem added mandatory shadow-table migrations for any table above 10 million rows.",
-      timestamp: 315,
-    },
-    {
-      speaker: 'Priya (HR)',
-      text: "That's a great example of staying calm under pressure. How do you communicate during an incident to stakeholders who aren't engineers — say, the CEO or a client-facing team?",
-      timestamp: 388,
-    },
-    {
-      speaker: 'Alex (Candidate)',
-      text: "I use a three-part format: one sentence on what's broken, one sentence on user impact in plain language, and one sentence on what we're doing and when we expect resolution. I send updates every 15 minutes until resolved, even if the update is just 'still investigating'. Stakeholders handle uncertainty better when they hear from you regularly.",
-      timestamp: 408,
+      speaker: 'Candidate',
+      text: "You have to assume external data is messy. Unicode issues, missing fields, rate limits, timeouts. I sanitize everything before it touches my system. For web scraping or search results, I strip characters that could break downstream processing. For API calls, I set aggressive timeouts and have fallback behavior. The pipeline should degrade gracefully. If enrichment fails, the core decision still works, it just has less context.",
+      timestamp: 285,
     },
     {
       speaker: 'Mike (Tech Lead)',
-      text: "Let's talk AI tooling specifically. You mentioned LLM integration — have you shipped LLM-powered features in production? What was the hardest engineering problem you ran into?",
-      timestamp: 455,
+      text: "Let's talk about cost management with LLMs. If you're processing thousands of items through an AI pipeline, how do you keep token costs from getting out of control?",
+      timestamp: 340,
     },
     {
-      speaker: 'Alex (Candidate)',
-      text: "Yes — we used Claude for extracting structured data from unstructured financial documents. The hardest problem was prompt regression: a model update silently shifted the output format for edge-case inputs and we didn't catch it for three days. After that we built a regression suite — a golden dataset of 200 documents with expected outputs — that runs on every deploy and blocks merge if accuracy drops more than two percent.",
-      timestamp: 475,
-    },
-    {
-      speaker: 'Mike (Tech Lead)',
-      text: "How did you handle cost and latency at scale for those LLM calls? Did you do any caching or batching?",
-      timestamp: 533,
-    },
-    {
-      speaker: 'Alex (Candidate)',
-      text: "We cached identical prompt hashes with a 24-hour TTL using Redis — about 18% of calls were cache hits. For latency we switched to streaming responses so the UI could start rendering immediately. We also tracked per-call token usage in a metrics table, which let us catch runaway prompts early and trim them before they hit token limits.",
-      timestamp: 553,
+      speaker: 'Candidate',
+      text: "A few things. First, don't send everything to the most expensive model. Use a cheap fast model to triage and only send the hard cases to the expensive one. Second, cap your inputs. If a document is 10 pages but the signal is in the first 3, don't send all 10. Third, gate expensive operations. If step one already tells you the answer is no, don't run step two. And track token usage per call so you can spot when a prompt is consuming more than expected.",
+      timestamp: 358,
     },
     {
       speaker: 'Priya (HR)',
-      text: "How do you approach collaboration when you strongly disagree with a technical direction the team has already committed to?",
-      timestamp: 608,
+      text: "How do you think about bias when you're building systems that evaluate people?",
+      timestamp: 415,
     },
     {
-      speaker: 'Alex (Candidate)',
-      text: "I flag it once, clearly and with specifics — here's the risk I see and here's what I'd do differently. If the team decides to proceed anyway I commit fully and make it work. What I avoid is litigating the decision repeatedly or building in escape hatches 'just in case I'm right'. Passive resistance is more corrosive than the original disagreement.",
-      timestamp: 628,
+      speaker: 'Candidate',
+      text: "It's something you have to design for explicitly, not hope for. I'd want the model to check its own reasoning before finalizing. Things like, am I penalizing this person for an employment gap that has nothing to do with their ability? Am I overweighting where they went to school versus what they actually built? You can't eliminate bias but you can surface it. Show the flags to the human reviewer and let them make the call. The AI should never auto-reject based on something that might be biased.",
+      timestamp: 432,
+    },
+    {
+      speaker: 'Mike (Tech Lead)',
+      text: "What about when you're comparing information from multiple sources and they don't match? Like a resume says one thing but an online profile says something different.",
+      timestamp: 490,
+    },
+    {
+      speaker: 'Candidate',
+      text: "You need to distinguish between a real contradiction and missing data. If someone's resume says they were a Director but LinkedIn says Manager, that's worth flagging. But if you just can't find their Twitter profile, that's not a red flag, that's just missing information. I'd label those differently. Real contradictions get flagged for review. Missing data gets noted but doesn't count against them. And you definitely don't want to auto-reject based on unverified web scraping results. The data quality isn't good enough for that.",
+      timestamp: 508,
+    },
+    {
+      speaker: 'Priya (HR)',
+      text: "Last question from me. What kind of team environment do you do your best work in?",
+      timestamp: 570,
+    },
+    {
+      speaker: 'Candidate',
+      text: "Small teams with clear ownership. I like environments where I can own a system end to end, make decisions quickly, and ship without a lot of process overhead. But I also want code review and somebody who'll push back on my ideas when I'm wrong. The best teams I've been on had strong opinions loosely held. We'd debate the approach, pick one, commit, and move fast.",
+      timestamp: 585,
     },
     {
       speaker: 'Sarah (Interviewer)',
-      text: "Last thing from us — do you have any questions about the role, the team, or where the product is headed?",
-      timestamp: 682,
+      text: "Any questions for us?",
+      timestamp: 635,
     },
     {
-      speaker: 'Alex (Candidate)',
-      text: "A few. First, how does the engineering team currently handle the tension between shipping fast and maintaining reliability — is there a formal SLO process or is it more ad-hoc? And second, what does success look like for someone in this role at the 6-month mark, from your perspective?",
-      timestamp: 700,
+      speaker: 'Candidate',
+      text: "Yeah, two things. How does the team handle on-call, and what does the first 90 days look like for someone in this role? I want to understand how quickly I'd be expected to ship versus ramp up.",
+      timestamp: 645,
     },
   ]
 
   const summary =
-    'Alex demonstrated strong technical depth across distributed systems design, LLM integration at scale, and incident management. They gave specific, metrics-grounded examples throughout — particularly around the payments platform migration incident and the prompt regression detection system. Communication instincts under pressure were excellent, and they showed mature thinking on team disagreement and commitment. Strong candidate overall; recommend advancing to the take-home stage.'
+    'Strong technical interview. Candidate demonstrated clear thinking on human-in-the-loop system design, LLM output validation, token cost management, and bias detection in AI-powered evaluation systems. Gave practical examples from production experience including fraud detection thresholds and data pipeline reliability. Showed mature perspective on distinguishing real data contradictions from missing information. Communication was direct and specific throughout. Recommended for next steps.'
 
   return { summary, entries }
 }

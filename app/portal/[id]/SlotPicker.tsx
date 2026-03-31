@@ -7,6 +7,8 @@ import { Loader2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useRouter } from 'next/navigation'
 
+const INTERVIEWER_TZ = process.env.NEXT_PUBLIC_INTERVIEWER_TIMEZONE ?? 'America/New_York'
+
 interface Props {
   applicationId: string
   slots: TentativeSlot[]
@@ -55,12 +57,13 @@ export function SlotPicker({ applicationId, slots }: Props) {
                 <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
                   {start.toLocaleDateString('en-US', {
                     weekday: 'long', month: 'long', day: 'numeric',
+                    timeZone: INTERVIEWER_TZ,
                   })}
                 </p>
                 <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                  {start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                  {start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: INTERVIEWER_TZ, timeZoneName: 'short' })}
                   {' – '}
-                  {end.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                  {end.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: INTERVIEWER_TZ })}
                   {' · 45 min'}
                 </p>
               </div>

@@ -262,7 +262,7 @@ ${job.requirements}
 ---
 
 RESUME TEXT:
-${resumeText}
+${resumeText.slice(0, 12000)}
 
 Evaluate this candidate and return the JSON object.`,
       },
@@ -726,7 +726,7 @@ export async function submitApplication(formData: FormData): Promise<ApplyResult
           (flag: string) => !flag.startsWith('UNVERIFIABLE:')
         ).length ?? 0
 
-        if (criticalFlagCount >= 5) {
+        if (criticalFlagCount >= 10) {
           await supabase
             .from('applications')
             .update({ status: 'pending_review' })
