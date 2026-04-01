@@ -91,18 +91,6 @@ Full architecture diagram, state machine, and phase-by-phase breakdown: **[docs/
 
 ---
 
-## Screenshots
-
-> Screenshots of the live system demonstrating the full pipeline.
-
-| View | Description |
-|---|---|
-| ![Career Portal](/docs/screenshots/careers.png) | Candidate-facing job listings with Apply button |
-| ![AI Screening](/docs/screenshots/screening.png) | Real-time AI scoring with fit score and rationale |
-| ![Admin Dashboard](/docs/screenshots/dashboard.png) | All applications with AI score badges and status filters |
-| ![Intelligence Profile](/docs/screenshots/intelligence.png) | AI enrichment with Tavily-grounded research and discrepancy flags |
-| ![Offer Signing](/docs/screenshots/signing.png) | In-browser e-signature with signature_pad canvas |
-
 ---
 
 ## Key Decisions
