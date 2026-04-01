@@ -61,7 +61,7 @@ async function reset() {
     .from('pending_slack_messages')
     .delete()
     .neq('id', '00000000-0000-0000-0000-000000000000') // delete all
-    .select('*', { count: 'exact', head: true })
+    .select('*')
   console.log(`  ✓ Cleared pending_slack_messages (${slackCount ?? 0} rows)`)
 
   // 2. Delete all offers
@@ -69,7 +69,7 @@ async function reset() {
     .from('offer_letters')
     .delete()
     .neq('id', '00000000-0000-0000-0000-000000000000')
-    .select('*', { count: 'exact', head: true })
+    .select('*')
   console.log(`  ✓ Cleared offer_letters (${offerCount ?? 0} rows)`)
 
   // 3. Delete all feedback
@@ -77,7 +77,7 @@ async function reset() {
     .from('interview_feedback')
     .delete()
     .neq('id', '00000000-0000-0000-0000-000000000000')
-    .select('*', { count: 'exact', head: true })
+    .select('*')
   console.log(`  ✓ Cleared interview_feedback (${feedbackCount ?? 0} rows)`)
 
   // 4. Reset candidates that advanced past "interviewed" back to "interviewed"
@@ -85,7 +85,7 @@ async function reset() {
     .from('applications')
     .update({ status: 'interviewed', admin_override_note: null })
     .in('status', ['offer_sent', 'hired'])
-    .select('*', { count: 'exact', head: true })
+    .select('*')
   console.log(`  ✓ Reset ${resetCount ?? 0} applications back to "interviewed"`)
 
   console.log('\n✅ Reset complete! You can now re-test:')

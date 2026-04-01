@@ -2,7 +2,7 @@
 
 ## Overview
 
-Niural Scout is the AI intelligence layer embedded in the candidate application pipeline. It performs two sequential tasks: **resume screening** and (for top candidates) **online profile enrichment**. Both tasks are powered by Claude Opus 4.6 with adaptive thinking.
+Niural Scout is the AI intelligence layer embedded in the candidate application pipeline. It performs two sequential tasks: **resume screening** (Claude Opus 4.6 with adaptive thinking) and, for shortlisted candidates, **online profile enrichment** (Tavily web search + Claude Sonnet 4.5 synthesis).
 
 ---
 
@@ -32,17 +32,17 @@ Niural Scout is the AI intelligence layer embedded in the candidate application 
 | `employers` | `string[]` | Past and present employers |
 | `achievements` | `string[]` | Specific measurable achievements extracted from resume |
 
-**Auto-shortlist rule:** If `score > 80`, `applications.status` is automatically set to `'shortlisted'` and Task 2 is triggered.
+**Auto-shortlist rule:** If `score >= 70`, `applications.status` is automatically set to `'shortlisted'` and Task 2 is triggered.
 
 ---
 
 ## Task 2: Online Profile Enrichment
 
-**Trigger:** Only when `score > 80` (shortlisted candidates).
+**Trigger:** Only when `score >= 70` (shortlisted candidates).
 
-**Rationale:** Enrichment is resource-intensive (additional LLM call with extended thinking). Restricting it to high-scoring candidates ensures cost-efficiency while maximising signal for candidates most likely to advance.
+**Rationale:** Enrichment is resource-intensive (Tavily web searches + Sonnet synthesis). Restricting it to high-scoring candidates saves ~8,000 tokens per rejected candidate while maximising signal for candidates most likely to advance.
 
-**Model:** `claude-opus-4-6` with `thinking: { type: "adaptive" }`
+**Model:** `claude-sonnet-4-5` (synthesis task — no extended thinking needed)
 
 **Inputs:**
 - Candidate full name
@@ -60,24 +60,27 @@ Niural Scout is the AI intelligence layer embedded in the candidate application 
 
 ---
 
-## Methodology: Simulated Web Research
+## Methodology: Grounded Web Research via Tavily
 
-### Why "simulated"?
+### How enrichment works
 
-Claude Opus 4.6 does **not** have live internet access during these calls. Niural Scout does not perform real-time web scraping or API calls to LinkedIn, GitHub, or X.
+Enrichment uses real web search data, not LLM inference. The architecture:
 
-Instead, the enrichment prompt instructs the model to:
+1. **Tavily Search API** — Three parallel searches run: `"${name}" site:linkedin.com`, `"${name}" site:github.com`, and `"${name}" developer engineer`. Returns structured results with titles, URLs, and content snippets.
+2. **Unicode sanitization** — Tavily content from arbitrary web pages is cleaned (lone surrogates, invalid XML characters stripped) before passing to Claude.
+3. **Claude Sonnet synthesis** — Receives real search results as grounded context with instructions to synthesize only what was found. Cannot add information beyond what Tavily returned.
+4. **Discrepancy detection** — Compares resume claims against real web findings. Distinguishes between DISCREPANCY (contradicted by evidence) and UNVERIFIABLE (data not found).
 
-1. **Parse URL structure** — A LinkedIn handle (e.g., `linkedin.com/in/janesmith-engineer`) provides indirect signals about professional identity and branding choices.
-2. **Cross-reference resume claims** — The model compares stated roles, employers, dates, and skills against what a well-maintained online profile *would typically show* for a candidate with that background.
-3. **Apply domain knowledge** — Claude's training data includes patterns from millions of professional profiles. It can reason about what a 5-year backend engineer at a major tech company's GitHub likely looks like, even without visiting the URL.
-4. **Flag structural inconsistencies** — Gaps that a human recruiter would notice (e.g., a resume claiming a Director title at a well-known company that has no presence on a fresh LinkedIn account).
+### Why this architecture
 
-### What this is NOT:
+The naive approach — asking Claude to "research" a candidate — produces hallucinated confidence. Claude invents plausible LinkedIn titles and GitHub repos that don't exist. Tavily-first architecture eliminates this structurally: Claude's task shifts from "research this person" to "synthesize these findings."
 
-- **Not a real-time search** — No HTTP requests are made to LinkedIn, GitHub, or any external service.
-- **Not a scrape** — The model infers from URL patterns and resume text, not from scraped HTML.
-- **Not verified data** — All enrichment output is probabilistic inference, not confirmed fact.
+### Limitations of Tavily approach
+
+- **Private LinkedIn profiles** return limited data
+- **Common names** may match multiple people
+- **Tavily search depth** is `basic` (not `advanced`) to control cost
+- Production upgrade: LinkedIn Partner API + GitHub REST API for structured, verified data
 
 ---
 
@@ -85,12 +88,11 @@ Instead, the enrichment prompt instructs the model to:
 
 | Limitation | Impact | Mitigation |
 |---|---|---|
-| No live web access | LinkedIn / GitHub profiles not actually visited | Admin should independently verify key claims before hiring decisions |
-| URL-only LinkedIn analysis | Cannot read endorsements, posts, or connection count | Use LinkedIn URL as a navigation shortcut in admin view |
-| Hallucination risk | AI may infer projects or employers that don't exist | All enrichment fields are clearly labelled "Simulated Research" in the UI |
-| GitHub analysis quality | Without reading actual repo content, code quality is estimated | Admin can click through to the provided GitHub URL for direct review |
-| No X / Twitter API | X presence is estimated, not fetched | Treat X findings as directional, not factual |
-| Resume parsing quality | PDF/DOCX extraction may lose formatting (tables, columns) | Parsed text is stored in `resume_text` for admin review |
+| Tavily returns limited data on private LinkedIn profiles | Enrichment may be sparse for candidates with restricted profiles | Admin can click through to LinkedIn URL for direct review |
+| Common names produce multiple matches | Tavily may return results for a different person with the same name | Discrepancy flags surface mismatches for human verification |
+| No direct GitHub API integration | Repo details inferred from Tavily search snippets, not API data | Production upgrade: GitHub REST API for structured repo/contribution data |
+| No X / Twitter API | X presence found via general web search, not API | Treat X findings as directional, not verified |
+| Resume parsing quality | PDF/DOCX extraction may lose formatting (tables, columns) | Parsed text stored in `resume_text` for admin review |
 
 ---
 

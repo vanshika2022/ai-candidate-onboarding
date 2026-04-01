@@ -1,4 +1,4 @@
-# Niural AI Hiring Pipeline — Claude Code Context
+# Niural AI Hiring Pipeline — Development Context
 
 ## Stack
 
@@ -7,15 +7,15 @@ Tailwind CSS, Resend, Google Calendar API, Tavily API, Fireflies.ai, signature_p
 
 ---
 
-## Non-negotiable Rules
+## Development Conventions
 
-- **ALWAYS** use `createAdminClient()` from `lib/supabase/server.ts` for all DB ops
-- **ALWAYS** use `claude-sonnet-4-5` for enrichment, offer drafting, and Slack messages
-- **ALWAYS** use `claude-opus-4-6` with `thinking: { type: 'adaptive' }` for screening only
-- **NEVER** expose the service role key to the browser — it must stay in Server Actions and Route Handlers only
-- All admin routes must verify `Authorization: Bearer === process.env.ADMIN_SECRET`
-- All Resend `send` calls: `const to = process.env.RESEND_TO_OVERRIDE || candidateEmail`
-- Every Claude API call must have a Zod schema that validates the response before any DB write
+- All DB operations use `createAdminClient()` from `lib/supabase/server.ts` (service-role, bypasses RLS)
+- `claude-sonnet-4-5` is used for enrichment, offer drafting, and Slack messages
+- `claude-opus-4-6` with `thinking: { type: 'adaptive' }` is used for screening only
+- The service role key is restricted to Server Actions and Route Handlers — never exposed to the browser
+- All admin routes verify `Authorization: Bearer === process.env.ADMIN_SECRET`
+- All Resend `send` calls respect `RESEND_TO_OVERRIDE`: `const to = process.env.RESEND_TO_OVERRIDE || candidateEmail`
+- Every Claude API call has a Zod schema that validates the response before any DB write
 - File uploads are validated server-side before any AI call or storage write (max 3 MB, PDF/DOCX only)
 - Resume text is capped before every AI call: Haiku gets first 2,000 chars, Opus gets first 12,000 chars (~3k tokens), enrichment gets first 4,000 chars — prevents oversized resumes from consuming unbounded tokens
 
@@ -88,7 +88,7 @@ supabase/migrations/20240101000003_disable_rls.sql         — disables RLS for 
 supabase/migrations/20240101000004_interview_link.sql      — interview_link column on applications
 supabase/migrations/20240101000005_new_status_values.sql   — adds pending_review, manual_review_required statuses
 supabase/migrations/20240101000007_interview_feedback.sql   — interview_feedback table (rating + comments, gates offer generation)
-supabase/migrations/add_missing_columns.sql                — has_discrepancies column + pending_slack_messages table
+supabase/migrations/20240101000008_add_missing_columns.sql                — has_discrepancies column + pending_slack_messages table
 ```
 
 ---

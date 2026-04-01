@@ -1,9 +1,10 @@
 # Niural Scout — AI Hiring Pipeline
 
-> Take-home assignment for the **AI Product Operator** role at Niural.
-> Application → AI screening → enrichment → interview scheduling → offer → e-signature → Slack onboarding.
+An end-to-end AI-powered candidate onboarding system that automates the full hiring pipeline: job listing, resume screening, candidate research, interview scheduling, offer generation, e-signature, and Slack onboarding. Every phase is augmented by AI with purpose-specific model selection (Opus for high-stakes screening, Sonnet for synthesis, Haiku for triage).
 
-### [Watch the Full Walkthrough →](https://www.youtube.com/watch?v=IsHxpDddllE)
+> Built as a take-home assignment for the **AI Product Operator** role at Niural.
+
+### [Watch the Full Walkthrough (15 min) →](https://www.youtube.com/watch?v=IsHxpDddllE)
 
 ---
 
@@ -90,6 +91,20 @@ Full architecture diagram, state machine, and phase-by-phase breakdown: **[docs/
 
 ---
 
+## Screenshots
+
+> Screenshots of the live system demonstrating the full pipeline.
+
+| View | Description |
+|---|---|
+| ![Career Portal](/docs/screenshots/careers.png) | Candidate-facing job listings with Apply button |
+| ![AI Screening](/docs/screenshots/screening.png) | Real-time AI scoring with fit score and rationale |
+| ![Admin Dashboard](/docs/screenshots/dashboard.png) | All applications with AI score badges and status filters |
+| ![Intelligence Profile](/docs/screenshots/intelligence.png) | AI enrichment with Tavily-grounded research and discrepancy flags |
+| ![Offer Signing](/docs/screenshots/signing.png) | In-browser e-signature with signature_pad canvas |
+
+---
+
 ## Key Decisions
 
 | Decision | What I chose | Why |
@@ -102,6 +117,34 @@ Full architecture diagram, state machine, and phase-by-phase breakdown: **[docs/
 | **Minimal form fields** | 4 fields + resume (AI extracts the rest) | Saves candidate time, accepts ~900 extra tokens/app. At scale: expand forms for high-volume roles. |
 
 Full decision log with options considered and trade-offs: **[DECISIONS.md](DECISIONS.md)**
+
+---
+
+## Edge Cases Handled
+
+The system handles 22 edge cases across the pipeline. Here are the top 5 most critical:
+
+| Edge Case | Solution | Why It Matters |
+|---|---|---|
+| **Concurrent slot booking** | 5 TENTATIVE Google Calendar holds per candidate — freebusy API treats them as busy. Zero shared slot pool. | Two candidates can never book the same interview slot, even simultaneously. |
+| **Scanned image PDF** | Text extraction produces < 200 chars → routed to `manual_review_required` before any AI call | Prevents wasting tokens on unreadable resumes while preserving the candidate's application. |
+| **LLM hallucinated enrichment** | Tavily searches first, Claude synthesizes only real results. Cannot add beyond what Tavily returned. | Eliminates invented LinkedIn titles and GitHub repos that plagued earlier versions. |
+| **Duplicate applications** | Candidate upsert + pre-AI duplicate check by email × job ID. Returns 400 before any AI call or storage write. | Prevents wasted AI tokens and duplicate records in the admin dashboard. |
+| **Offer signed twice** | Status check on `/api/offers/[id]/sign` — first sign transitions to `signed`, all subsequent POSTs return 400. | Replay attacks and accidental double-clicks cannot create duplicate hire records. |
+
+Full catalog of all 22 edge cases: **[docs/ARCHITECTURE.md → Edge Cases Catalog](docs/ARCHITECTURE.md#edge-cases-catalog)**
+
+---
+
+## Assumptions & Trade-offs
+
+| Decision | What I Built | Production Alternative | Why This Was Right for a Prototype |
+|---|---|---|---|
+| **Auth model** | Two UIs with Bearer token on admin routes | JWT-based RBAC with 3 roles via Supabase Auth ([designed in docs/RBAC_DESIGN.md](docs/RBAC_DESIGN.md)) | RBAC adds 2–3 days of auth infrastructure. Bearer token is secure for single-admin demo. |
+| **Synchronous AI pipeline** | Server Action blocks ~20s during screening + enrichment | Async job queue (Inngest/BullMQ) — form returns instantly, AI runs in background | Synchronous is simpler to debug. Job queue requires Redis/managed workers not needed at prototype scale. |
+| **Web enrichment** | Tavily web search → Claude synthesis (no direct API scraping) | LinkedIn Partner API + GitHub REST API for structured, verified data | Partner APIs require enterprise accounts. Tavily + Claude produces useful intelligence. Limitations documented in [RESEARCH_APPROACH.md](RESEARCH_APPROACH.md). |
+| **Mock Fireflies endpoint** | `POST /api/mocks/fireflies` injects fixture transcript | Production HMAC webhook with live Fireflies account | Demo without requiring a live meeting. Mock path clearly labelled; real webhook handler also implemented. |
+| **Offer ID as access token** | `/sign/[id]` is public — UUID (2^122 entropy) is the auth | Time-limited signed JWT with 5-day expiry | UUID is unguessable. Replay prevented by status transition. JWTs add token management complexity not needed here. |
 
 ---
 
@@ -141,7 +184,7 @@ Full token analysis, candidate-time-vs-cost trade-off, and 6-stage scale roadmap
 | [docs/RBAC_DESIGN.md](docs/RBAC_DESIGN.md) | Production RBAC design with 3 roles, RLS policies, migration path |
 | [DECISIONS.md](DECISIONS.md) | 8 key technical decisions with options considered and reasoning |
 | [RESEARCH_APPROACH.md](RESEARCH_APPROACH.md) | AI intelligence layer methodology and limitations |
-| [CLAUDE.md](CLAUDE.md) | Full system context for Claude Code (development reference) |
+| [CLAUDE.md](CLAUDE.md) | Development context and conventions |
 
 ---
 
@@ -178,7 +221,9 @@ supabase/migrations/20240101000002_intelligence_columns.sql
 supabase/migrations/20240101000003_disable_rls.sql
 supabase/migrations/20240101000004_interview_link.sql
 supabase/migrations/20240101000005_new_status_values.sql
-supabase/migrations/add_missing_columns.sql
+supabase/migrations/20240101000006_reschedule.sql
+supabase/migrations/20240101000007_interview_feedback.sql
+supabase/migrations/20240101000008_add_missing_columns.sql
 ```
 
 ---
