@@ -1,4 +1,4 @@
-# Niural Scout — AI Hiring Pipeline
+# AI Hiring Pipeline
 
 An end-to-end AI-powered candidate onboarding system that automates the full hiring pipeline: job listing, resume screening, candidate research, interview scheduling, offer generation, e-signature, and Slack onboarding. Every phase is augmented by AI with purpose-specific model selection (Opus for high-stakes screening, Sonnet for synthesis, Haiku for triage).
 
